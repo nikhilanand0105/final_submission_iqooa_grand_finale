@@ -1,4 +1,4 @@
-# SAATHI Ecosystem — iQOO Grand Finale Final Submission
+# GuardianAi Ecosystem — iQOO Grand Finale Final Submission
 
 > **On-Device Threat Intelligence & Proactive Cyber Guardian Ecosystem for Android**  
 > Developed for the **iQOO Grand Finale** Hackathon by Nikhil Anand.
@@ -9,10 +9,10 @@
 
 Modern mobile users in India face an epidemic of cyber threats: fraudulent WhatsApp MODs, banking trojans, screen-sharing scam apps, SMS OTP stealers, predatory messaging, and stealthy data exfiltration via third-party cloud apps. 
 
-The **Saathi Ecosystem** is a unified, privacy-first mobile security suite designed to run **entirely on-device** with zero cloud latency and zero privacy compromise:
+The **GuardianAi Ecosystem** is a unified, privacy-first mobile security suite designed to run **entirely on-device** with zero cloud latency and zero privacy compromise:
 
-1. **Saathi Personal (`/Sathi`)** — Advanced mobile threat intelligence, offline APK bytecode analyzer, local DNS packet firewall, real-time data exfiltration sentinel, and Hinglish/Hindi Explainable AI risk synthesizer powered by on-device Gemma LiteRT LM.
-2. **Saathi Kids (`/Sathi_Kids`)** — Next-generation digital safety guardian for children and teens featuring real-time scam/predatory chat detection, emergency SOS with location sharing, safe browser filtering, and interactive cybersecurity education.
+1. **GuardianAi Personal (`/GuardianAi`)** — Advanced mobile threat intelligence, offline APK bytecode analyzer, local DNS packet firewall, real-time data exfiltration sentinel, and Hinglish/Hindi Explainable AI risk synthesizer powered by on-device Gemma LiteRT LM.
+2. **GuardianAi Kids (`/GuardianAi_Kids`)** — Next-generation digital safety guardian for children and teens featuring real-time scam/predatory chat detection, emergency SOS with location sharing, safe browser filtering, and interactive cybersecurity education.
 3. **Pre-compiled Test APKs (`/apks`)** — Ready-to-install debug builds for direct evaluation on Android devices (optimized for Snapdragon 8 Elite / Android 16 / iQOO 15).
 
 ---
@@ -22,9 +22,9 @@ The **Saathi Ecosystem** is a unified, privacy-first mobile security suite desig
 ```
 final_submission_iqooa_grand_finale/
 ├── apks/                               # Pre-compiled installable APK binaries
-│   ├── Saathi_Personal_v1.0_debug.apk  # Saathi Personal standalone debug build
-│   └── Saathi_Kids_v1.0_debug.apk      # Saathi Kids standalone debug build
-├── Sathi/                              # Saathi Personal Android App & Core Engine
+│   ├── GuardianAi_Personal_v1.0_debug.apk  # GuardianAi Personal standalone debug build
+│   └── GuardianAi_Kids_v1.0_debug.apk      # GuardianAi Kids standalone debug build
+├── GuardianAi/                         # GuardianAi Personal Android App & Core Engine
 │   ├── app/                            # Android App module (CRED monochrome design)
 │   ├── core/                           # Pure Java/Kotlin on-device security core engine
 │   ├── cli-runner/                     # Command-line scanner tool
@@ -32,7 +32,7 @@ final_submission_iqooa_grand_finale/
 │   ├── screenshots/                    # 70+ high-resolution screenshots & live testing
 │   ├── test_samples/                   # Test APKs (Clean Calculator, WhatsApp MOD, etc.)
 │   └── build.gradle.kts                # Project build configuration
-├── Sathi_Kids/                         # Saathi Kids Android App & Guardian Backend
+├── GuardianAi_Kids/                    # GuardianAi Kids Android App & Guardian Backend
 │   ├── app/                            # Android App module with Kids UI & overlays
 │   ├── core/                           # Kids safety rule engine, URL & message analyzers
 │   ├── backend/                        # Firebase functions & Firestore security rules
@@ -46,7 +46,7 @@ final_submission_iqooa_grand_finale/
 
 ## 🛡️ Key Features & Innovations
 
-### 1. Saathi Personal (`Sathi/`)
+### 1. GuardianAi Personal (`GuardianAi/`)
 
 - **On-Device Static APK Inspection (Zero Network)**
   - Direct Dalvik Executable (`classes.dex`) bytecode scanning.
@@ -71,7 +71,7 @@ final_submission_iqooa_grand_finale/
 
 ---
 
-### 2. Saathi Kids (`Sathi_Kids/`)
+### 2. GuardianAi Kids (`GuardianAi_Kids/`)
 
 - **Proactive Notification & Chat Safety Listener**
   - Monitors incoming message notifications via `NotificationListenerService`.
@@ -91,11 +91,11 @@ final_submission_iqooa_grand_finale/
 Both APKs are provided in `/apks` for instant evaluation on an Android device or emulator (Android 8.0+ / API 26 through Android 16 / API 35):
 
 ```bash
-# Install Saathi Personal
-adb install apks/Saathi_Personal_v1.0_debug.apk
+# Install GuardianAi Personal
+adb install apks/GuardianAi_Personal_v1.0_debug.apk
 
-# Install Saathi Kids
-adb install apks/Saathi_Kids_v1.0_debug.apk
+# Install GuardianAi Kids
+adb install apks/GuardianAi_Kids_v1.0_debug.apk
 ```
 
 ---
@@ -103,13 +103,13 @@ adb install apks/Saathi_Kids_v1.0_debug.apk
 ## 🛠️ Building from Source
 
 ### Prerequisites
-- JDK 17 (recommended: Eclipse Temurin 17 or OpenJDK 17)
+- JDK 17 or JDK 21 (Eclipse Temurin, OpenJDK, or Zulu)
 - Android SDK (API 34/35 platform installed, build-tools 34.0.0+)
 - Gradle 8.5+ (or use included `./gradlew`)
 
-### 1. Build Saathi Personal
+### 1. Build GuardianAi Personal
 ```bash
-cd Sathi
+cd GuardianAi
 # Create local.properties pointing to your SDK:
 echo "sdk.dir=$ANDROID_HOME" > local.properties
 
@@ -119,11 +119,11 @@ echo "sdk.dir=$ANDROID_HOME" > local.properties
 # Build debug APK:
 ./gradlew :app:assembleDebug
 ```
-Output APK: `Sathi/app/build/outputs/apk/debug/app-debug.apk`
+Output APK: `GuardianAi/app/build/outputs/apk/debug/app-debug.apk`
 
-### 2. Build Saathi Kids
+### 2. Build GuardianAi Kids
 ```bash
-cd Sathi_Kids
+cd GuardianAi_Kids
 # Create local.properties pointing to your SDK:
 echo "sdk.dir=$ANDROID_HOME" > local.properties
 
@@ -133,11 +133,11 @@ echo "sdk.dir=$ANDROID_HOME" > local.properties
 # Build debug APK:
 ./gradlew :app:assembleDebug
 ```
-Output APK: `Sathi_Kids/app/build/outputs/apk/debug/app-debug.apk`
+Output APK: `GuardianAi_Kids/app/build/outputs/apk/debug/app-debug.apk`
 
 ### 3. Run Command-Line APK Scanner (Desktop CLI)
 ```bash
-cd Sathi
+cd GuardianAi
 ./gradlew :cli-runner:run --args="test_samples/device_whatsapp_mod.apk"
 ```
 
@@ -146,15 +146,15 @@ cd Sathi
 ## 🧪 Automated Test Suite
 
 Both apps include extensive unit and integration tests across core engines:
-- `SaathiSecurityTestSuite.java` — Tests APK static analyzer, DEX bytecode decoder, signature inspector, threat rules, and firewall.
+- `GuardianAiSecurityTestSuite.java` — Tests APK static analyzer, DEX bytecode decoder, signature inspector, threat rules, and firewall.
 - `UrlSafetyPipelineTest.java` — Validates phishing URL scoring, domain typosquatting, and heuristic reputation checks.
 - `MessageSafetyAnalyzerTest.java` — Validates Hinglish contextual risk extraction and safety classification.
 - `OnDeviceLanguageModelTest.java` — Verifies Explainable AI prompts and fallback synthesis.
 
 Run all tests:
 ```bash
-cd Sathi && ./gradlew test
-cd ../Sathi_Kids && ./gradlew test
+cd GuardianAi && ./gradlew test
+cd ../GuardianAi_Kids && ./gradlew test
 ```
 
 ---
@@ -162,8 +162,8 @@ cd ../Sathi_Kids && ./gradlew test
 ## 📸 Screenshots & Demonstrations
 
 Comprehensive test runs and UI captures from real device testing (iQOO / Android 16) are available under:
-- `Sathi/screenshots/` — 70+ screenshots covering scan tabs, live WhatsApp MOD quarantine, SBI phishing link interception, DNS firewall toggle, and Hinglish explainable AI.
-- `Sathi/test_samples/` — Real-world test sample APKs used during validation.
+- `GuardianAi/screenshots/` — 70+ screenshots covering scan tabs, live WhatsApp MOD quarantine, SBI phishing link interception, DNS firewall toggle, and Hinglish explainable AI.
+- `GuardianAi/test_samples/` — Real-world test sample APKs used during validation.
 
 ---
 

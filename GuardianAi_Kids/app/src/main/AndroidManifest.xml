@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Backend calls (family pairing, help requests, optional online link check). HTTPS only. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- Requested only if the child chooses to share an approximate location with a help request. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+    <!-- Safety alerts as system notifications (runtime permission on Android 13+, requested from Settings). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Tactile feedback for navigation -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <!-- Lets GuardianAi show the app name (instead of a package id) in alerts for these messaging apps. -->
+    <queries>
+        <package android:name="com.whatsapp" />
+        <package android:name="com.whatsapp.w4b" />
+        <package android:name="com.instagram.android" />
+        <package android:name="com.snapchat.android" />
+        <package android:name="org.telegram.messenger" />
+        <package android:name="com.discord" />
+        <package android:name="com.facebook.orca" />
+        <package android:name="org.thoughtcrime.securesms" />
+        <package android:name="com.google.android.apps.messaging" />
+        <package android:name="com.google.android.gm" />
+        <package android:name="com.roblox.client" />
+    </queries>
+
+    <application
+        android:allowBackup="false"
+        android:hardwareAccelerated="true"
+        android:largeHeap="true"
+        android:usesCleartextTraffic="false"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.GuardianAi">
+
+        <!-- LiteRT-LM GPU backend loads the vendor OpenCL library when present (documented LiteRT requirement). -->
+        <uses-native-library
+            android:name="libOpenCL.so"
+            android:required="false" />
+
+        <meta-data
+            android:name="android.max_aspect"
+            android:value="2.5" />
+
+        <activity
+            android:name="dev.guardianai.kids.ui.MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:screenOrientation="portrait"
+            android:configChanges="orientation|screenSize|screenLayout|density"
+            android:windowSoftInputMode="adjustResize">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- "Open with GuardianAi Kids" for a downloaded APK (content:// URIs only; the file is read, never installed) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
+                <data android:mimeType="application/vnd.android.package-archive" />
+            </intent-filter>
+
+            <!-- "Share to GuardianAi Kids": APK files and text/links. Nothing is checked until the child taps Check. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/vnd.android.package-archive" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+
+        </activity>
+
+        <!-- Background notification checks. Android binds this only after the user enables notification access
+             (Settings → Notification access); it is not a foreground service and holds no wake locks. -->
+        <service
+            android:name="dev.guardianai.kids.safety.GuardianAiNotificationListener"
+            android:exported="true"
+            android:label="GuardianAi Kids safety checks"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+        <activity
+            android:name="dev.guardianai.kids.safety.SafeBrowserActivity"
+            android:exported="false"
+            android:label="GuardianAi Safe Browser"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:windowSoftInputMode="adjustResize" />
+
+    </application>
+
+</manifest>
