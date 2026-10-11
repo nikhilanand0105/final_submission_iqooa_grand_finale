@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="dev.saathi.personal">
+
+    <!-- Basic network capabilities for cloud threat reputation lookup -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- Optional location only for emergency SOS dispatch -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+    <!-- 
+      NOTE: We deliberately DO NOT request android.permission.REQUEST_INSTALL_PACKAGES.
+      Google Play restricts that permission to specialized apps (e.g. app stores).
+      Saathi analyses the APK statically, presents the verdict card, and then delegates
+      safe package installation to Android's built-in Package Installer via Intent.ACTION_VIEW.
+    -->
+
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Saathi">
+
+        <!-- Main Home & Dashboard Activity -->
+        <activity
+            android:name=".ui.MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 
+          Saathi Shield APK Inspection Activity
+          Intercepts user-shared APKs from Chrome, Downloads, WhatsApp, or File Managers
+        -->
+        <activity
+            android:name=".ui.ApkScannerActivity"
+            android:exported="true"
+            android:label="Scan with Saathi Shield"
+            android:theme="@style/Theme.Saathi.ScannerDialog">
+
+            <!-- 1. Intercept "Open With" / Tap on downloaded APK file -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="application/vnd.android.package-archive" />
+            </intent-filter>
+
+            <!-- 2. Intercept "Share via Saathi" from Chrome / Files -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/vnd.android.package-archive" />
+            </intent-filter>
+        </activity>
+
+        <!-- Secure Scoped Storage FileProvider -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="dev.saathi.personal.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+    </application>
+
+</manifest>

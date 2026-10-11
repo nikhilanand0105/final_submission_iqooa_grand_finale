@@ -1,0 +1,16 @@
+*.iml
+.gradle
+/local.properties
+.idea/
+.DS_Store
+/build
+*/build/
+captures/
+.externalNativeBuild
+.cxx
+
+# Backend / model artefacts
+node_modules/
+backend/firebase/.firebaserc
+backend/firebase/functions/.runtimeconfig.json
+*.litertlm

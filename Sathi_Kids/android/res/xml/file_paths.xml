@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Scoped storage isolated cache directory for temporary APK inspection -->
+    <cache-path name="apk_scans" path="scans/" />
+    <!-- Standard external downloads path for SAF access -->
+    <external-path name="downloads" path="Download/" />
+</paths>

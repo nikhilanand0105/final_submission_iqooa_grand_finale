@@ -1,0 +1,226 @@
+{
+  "schemaVersion": 1,
+  "registryVersion": "2026.10.1",
+  "verificationDate": "2026-10-11",
+  "authoritySource": "Reserve Bank of India Circular RBI/2023-24/104 (Migration to .bank.in domain) and Ministry of Finance Banking Directory",
+  "banks": [
+    {
+      "bankId": "sbi",
+      "bankName": "State Bank of India",
+      "category": "PUBLIC_SECTOR",
+      "primaryDomain": "sbi.bank.in",
+      "purpose": "Main corporate portal and retail banking",
+      "subdomainsPermitted": true,
+      "subdomainsRationale": "SBI operates divisional and functional portals such as www, corp, and retail under sbi.bank.in",
+      "legacyAliases": [
+        "sbi.co.in",
+        "onlinesbi.sbi",
+        "bank.sbi",
+        "onlinesbi.com"
+      ],
+      "officialSourceUrl": "https://sbi.bank.in/",
+      "verificationDate": "2026-10-11",
+      "status": "VERIFIED_ACTIVE",
+      "limitations": "Read-only navigation verification; authenticated transactional pages separate."
+    },
+    {
+      "bankId": "hdfc",
+      "bankName": "HDFC Bank",
+      "category": "PRIVATE_SECTOR",
+      "primaryDomain": "hdfc.bank.in",
+      "purpose": "Corporate portal and retail banking gateway",
+      "subdomainsPermitted": true,
+      "subdomainsRationale": "HDFC Bank hosts retail netbanking and divisional portals on verified subdomains",
+      "legacyAliases": [
+        "hdfcbank.com",
+        "netbanking.hdfcbank.com"
+      ],
+      "officialSourceUrl": "https://hdfc.bank.in/",
+      "verificationDate": "2026-10-11",
+      "status": "VERIFIED_ACTIVE",
+      "limitations": "Root domain redirects to verified portal https://www.hdfcbank.com/."
+    },
+    {
+      "bankId": "icici",
+      "bankName": "ICICI Bank",
+      "category": "PRIVATE_SECTOR",
+      "primaryDomain": "icici.bank.in",
+      "purpose": "Main corporate website and internet banking portal",
+      "subdomainsPermitted": true,
+      "subdomainsRationale": "ICICI Bank uses www and secure subdomains for internet banking services",
+      "legacyAliases": [
+        "icicibank.com",
+        "infinity.icicibank.com"
+      ],
+      "officialSourceUrl": "https://www.icici.bank.in/",
+      "verificationDate": "2026-10-11",
+      "status": "VERIFIED_ACTIVE",
+      "limitations": "Corporate pages link to infinity netbanking portal."
+    },
+    {
+      "bankId": "axis",
+      "bankName": "Axis Bank",
+      "category": "PRIVATE_SECTOR",
+      "primaryDomain": "axis.bank.in",
+      "purpose": "Main website and internet banking",
+      "subdomainsPermitted": true,
+      "subdomainsRationale": "Axis Bank operates regional and retail services on subdomains including www",
+      "legacyAliases": [
+        "axisbank.com",
+        "omni.axisbank.com"
+      ],
+      "officialSourceUrl": "https://www.axis.bank.in/",
+      "verificationDate": "2026-10-11",
+      "status": "VERIFIED_ACTIVE",
+      "limitations": "Public corporate pages verified."
+    },
+    {
+      "bankId": "pnb",
+      "bankName": "Punjab National Bank",
+      "category": "PUBLIC_SECTOR",
+      "primaryDomain": "pnb.bank.in",
+      "purpose": "Main corporate and retail banking portal",
+      "subdomainsPermitted": true,
+      "subdomainsRationale": "PNB hosts internet banking portals and services under www and regional subdomains",
+      "legacyAliases": [
+        "pnbindia.in",
+        "netpnb.com"
+      ],
+      "officialSourceUrl": "https://www.pnb.bank.in/",
+      "verificationDate": "2026-10-11",
+      "status": "VERIFIED_ACTIVE",
+      "limitations": "Retail banking portal on netpnb.com officially linked."
+    },
+    {
+      "bankId": "bob",
+      "bankName": "Bank of Baroda",
+      "category": "PUBLIC_SECTOR",
+      "primaryDomain": "bankofbaroda.bank.in",
+      "purpose": "Main corporate and digital banking portal",
+      "subdomainsPermitted": true,
+      "subdomainsRationale": "Bank of Baroda hosts corporate and digital banking on www and bobibanking subdomains",
+      "legacyAliases": [
+        "bankofbaroda.in",
+        "bobibanking.com"
+      ],
+      "officialSourceUrl": "https://bankofbaroda.bank.in/",
+      "verificationDate": "2026-10-11",
+      "status": "VERIFIED_ACTIVE",
+      "limitations": "Online banking portal linked to bobibanking.com."
+    },
+    {
+      "bankId": "kotak",
+      "bankName": "Kotak Mahindra Bank",
+      "category": "PRIVATE_SECTOR",
+      "primaryDomain": "kotak.bank.in",
+      "purpose": "Main banking and financial services portal",
+      "subdomainsPermitted": true,
+      "subdomainsRationale": "Subdomains for retail and corporate banking services",
+      "legacyAliases": [
+        "kotak.com"
+      ],
+      "officialSourceUrl": "https://www.kotak.com/",
+      "verificationDate": "2026-10-11",
+      "status": "VERIFIED_ACTIVE",
+      "limitations": "Corporate and retail portal verified."
+    },
+    {
+      "bankId": "canara",
+      "bankName": "Canara Bank",
+      "category": "PUBLIC_SECTOR",
+      "primaryDomain": "canara.bank.in",
+      "purpose": "Main corporate and retail banking portal",
+      "subdomainsPermitted": true,
+      "subdomainsRationale": "Subdomains for internet banking and divisional branches",
+      "legacyAliases": [
+        "canarabank.com"
+      ],
+      "officialSourceUrl": "https://canarabank.com/",
+      "verificationDate": "2026-10-11",
+      "status": "VERIFIED_ACTIVE",
+      "limitations": "Public corporate pages verified."
+    },
+    {
+      "bankId": "unionbank",
+      "bankName": "Union Bank of India",
+      "category": "PUBLIC_SECTOR",
+      "primaryDomain": "unionbank.bank.in",
+      "purpose": "Main corporate and retail banking portal",
+      "subdomainsPermitted": true,
+      "subdomainsRationale": "Subdomains for regional and digital banking",
+      "legacyAliases": [
+        "unionbankofindia.co.in",
+        "unionbankonline.co.in"
+      ],
+      "officialSourceUrl": "https://unionbankofindia.co.in/",
+      "verificationDate": "2026-10-11",
+      "status": "VERIFIED_ACTIVE",
+      "limitations": "Public portal verified."
+    },
+    {
+      "bankId": "boi",
+      "bankName": "Bank of India",
+      "category": "PUBLIC_SECTOR",
+      "primaryDomain": "bankofindia.bank.in",
+      "purpose": "Main banking portal",
+      "subdomainsPermitted": true,
+      "subdomainsRationale": "Subdomains for retail and corporate internet banking",
+      "legacyAliases": [
+        "bankofindia.co.in"
+      ],
+      "officialSourceUrl": "https://bankofindia.co.in/",
+      "verificationDate": "2026-10-11",
+      "status": "VERIFIED_ACTIVE",
+      "limitations": "Public pages verified."
+    },
+    {
+      "bankId": "indianbank",
+      "bankName": "Indian Bank",
+      "category": "PUBLIC_SECTOR",
+      "primaryDomain": "indianbank.bank.in",
+      "purpose": "Corporate and netbanking portal",
+      "subdomainsPermitted": true,
+      "subdomainsRationale": "Subdomains for digital banking",
+      "legacyAliases": [
+        "indianbank.in",
+        "indianbank.net.in"
+      ],
+      "officialSourceUrl": "https://indianbank.in/",
+      "verificationDate": "2026-10-11",
+      "status": "VERIFIED_ACTIVE",
+      "limitations": "Public pages verified."
+    },
+    {
+      "bankId": "centralbank",
+      "bankName": "Central Bank of India",
+      "category": "PUBLIC_SECTOR",
+      "primaryDomain": "centralbank.bank.in",
+      "purpose": "Main corporate and retail banking",
+      "subdomainsPermitted": true,
+      "subdomainsRationale": "Subdomains for digital banking and online services",
+      "legacyAliases": [
+        "centralbankofindia.co.in"
+      ],
+      "officialSourceUrl": "https://centralbankofindia.co.in/",
+      "verificationDate": "2026-10-11",
+      "status": "VERIFIED_ACTIVE",
+      "limitations": "Public pages verified."
+    },
+    {
+      "bankId": "indusind",
+      "bankName": "IndusInd Bank",
+      "category": "PRIVATE_SECTOR",
+      "primaryDomain": "indusind.bank.in",
+      "purpose": "Main corporate and retail banking portal",
+      "subdomainsPermitted": true,
+      "subdomainsRationale": "Subdomains for digital and netbanking",
+      "legacyAliases": [
+        "indusind.com"
+      ],
+      "officialSourceUrl": "https://www.indusind.com/",
+      "verificationDate": "2026-10-11",
+      "status": "VERIFIED_ACTIVE",
+      "limitations": "Public corporate pages verified."
+    }
+  ]
+}

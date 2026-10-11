@@ -1,0 +1,26 @@
+<resources>
+    <string name="app_name">SAATHI</string>
+    <string name="tagline">AI Companion for Digital Safety</string>
+    
+    <!-- Navigation Tabs -->
+    <string name="nav_home">Home</string>
+    <string name="nav_insights">Insights</string>
+    <string name="nav_activity">Activity</string>
+    <string name="nav_assistant">Assistant</string>
+    <string name="nav_guardian">Guardian</string>
+
+    <!-- Child Profiles -->
+    <string name="profile_aarav">Aarav (Teen • 14y)</string>
+    <string name="profile_ananya">Ananya (Child • 9y)</string>
+    <string name="profile_senior">Dadaji (Senior • 72y)</string>
+
+    <!-- Helpline & SOS -->
+    <string name="helpline_1930">Call 1930 Helpline</string>
+    <string name="helpline_title">National Cyber Crime Helpline (1930)</string>
+    <string name="helpline_desc">Immediate financial fraud freeze by Indian Cybercrime Coordination Centre (I4C).</string>
+
+    <!-- Statuses -->
+    <string name="status_protected">OPTIMAL DEFENSE</string>
+    <string name="status_threat_detected">THREAT NEUTRALIZED</string>
+    <string name="senior_mode_title">Senior Mode (Accessible)</string>
+</resources>

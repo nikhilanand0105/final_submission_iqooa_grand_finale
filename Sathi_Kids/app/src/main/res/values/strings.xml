@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">Saathi Kids</string>
+
+    <!-- Bottom navigation (activity_main.xml). Screen text is built in code. -->
+    <string name="nav_home">Home</string>
+    <string name="nav_check">Check</string>
+    <string name="nav_learn">Learn</string>
+    <string name="nav_settings">Settings</string>
+</resources>

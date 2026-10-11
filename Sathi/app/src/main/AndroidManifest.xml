@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Network permissions for threat reputation lookup -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" tools:ignore="ProtectedPermissions" />
+
+    <!-- Optional location only for emergency SOS dispatch -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+    <!-- Phone dialer permission for Helpline 1930 quick action in Senior Mode -->
+    <uses-permission android:name="android.permission.CALL_PHONE" />
+
+    <!-- Haptic feedback for tactile CRED navigation interactions -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <!-- Storage permissions for inspecting downloaded sideloaded APK files -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+
+    <!-- 
+      iQOO 15 Optimization: 64-bit arm64-v8a target.
+      We deliberately OMIT REQUEST_INSTALL_PACKAGES to comply with Google Play Policy.
+      Saathi delegates package installation to Android's native PackageInstaller via Intent.ACTION_VIEW.
+    -->
+
+    <!-- Declare query intent for launcher apps to inspect installed apps on Android 11+ without broad QUERY_ALL_PACKAGES -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
+    <application
+        android:allowBackup="false"
+        android:hardwareAccelerated="true"
+        android:largeHeap="true"
+        android:label="Saathi"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Saathi">
+
+        <!-- Support 22:10 ultra-tall display on iQOO 15 (1440x3168) -->
+        <meta-data
+            android:name="android.max_aspect"
+            android:value="2.5" />
+
+        <!-- Main Home & Live Scanner Activity -->
+        <activity
+            android:name=".ui.MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|density"
+            android:windowSoftInputMode="adjustResize">
+
+            <!-- Default Launcher Intent -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- 1. Intercept "Open With" for downloaded APK files -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="application/vnd.android.package-archive" />
+            </intent-filter>
+
+            <!-- 2. Intercept "Share via Saathi" from Chrome, WhatsApp, Files -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/vnd.android.package-archive" />
+            </intent-filter>
+
+        </activity>
+
+        <!-- Secure Scoped Storage FileProvider -->
+        <provider
+            android:name="dev.saathi.personal.provider.SaathiFileProvider"
+            android:authorities="dev.saathi.personal.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <!-- Real On-Device Network Protection (DNS Firewall) -->
+        <service
+            android:name="dev.saathi.personal.network.SaathiVpnService"
+            android:permission="android.permission.BIND_VPN_SERVICE"
+            android:foregroundServiceType="specialUse"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Local on-device DNS firewall and malicious domain sinkholing" />
+        </service>
+
+    </application>
+
+</manifest>
