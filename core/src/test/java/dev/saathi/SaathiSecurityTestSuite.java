@@ -11,6 +11,8 @@ import dev.saathi.sense.ConversationRiskReport;
 import dev.saathi.sense.SaathiSenseEngine;
 import dev.saathi.sense.SafetyCategory;
 
+import org.junit.jupiter.api.Test;
+
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.List;
@@ -24,19 +26,19 @@ public class SaathiSecurityTestSuite {
     public static void main(String[] args) {
         System.out.println("Running Saathi Security Core Verification Suite...");
 
-        testBinaryXmlParser();
-        testBankingTrojanRule();
-        testOtpStealerRule();
-        testScreenShareRule();
-        testTollFraudRule();
-        testLocalStorageRetention();
-        testInstallHandoff();
-        testVerdictDetermination();
-        testHinglishSenseEngine();
-        testPhishingScanner();
-        testLocalFirewall();
-        testHindiSynthesizer();
-        testApkScannerViewModel();
+        new SaathiSecurityTestSuite().testBinaryXmlParser();
+        new SaathiSecurityTestSuite().testBankingTrojanRule();
+        new SaathiSecurityTestSuite().testOtpStealerRule();
+        new SaathiSecurityTestSuite().testScreenShareRule();
+        new SaathiSecurityTestSuite().testTollFraudRule();
+        new SaathiSecurityTestSuite().testLocalStorageRetention();
+        new SaathiSecurityTestSuite().testInstallHandoff();
+        new SaathiSecurityTestSuite().testVerdictDetermination();
+        new SaathiSecurityTestSuite().testHinglishSenseEngine();
+        new SaathiSecurityTestSuite().testPhishingScanner();
+        new SaathiSecurityTestSuite().testLocalFirewall();
+        new SaathiSecurityTestSuite().testHindiSynthesizer();
+        new SaathiSecurityTestSuite().testApkScannerViewModel();
 
         System.out.printf("\nTest Results: %d/%d tests PASSED.%n", testsPassed, testsRun);
         if (testsPassed != testsRun) {
@@ -45,7 +47,8 @@ public class SaathiSecurityTestSuite {
         }
     }
 
-    private static void testPhishingScanner() {
+    @Test
+    public void testPhishingScanner() {
         startTest("PhishingUrlScanner flags banking impersonation and raw IP URLs");
         dev.saathi.shield.network.PhishingUrlScanner scanner = new dev.saathi.shield.network.PhishingUrlScanner();
 
@@ -60,7 +63,8 @@ public class SaathiSecurityTestSuite {
         pass();
     }
 
-    private static void testLocalFirewall() {
+    @Test
+    public void testLocalFirewall() {
         startTest("LocalFirewallEngine destination filtering and transfer anomaly checks");
         dev.saathi.shield.network.LocalFirewallEngine fw = new dev.saathi.shield.network.LocalFirewallEngine();
         assertTrue(fw.shouldBlockConnection("phishing-sbi-portal.xyz", 443), "Blocks malicious host");
@@ -71,7 +75,8 @@ public class SaathiSecurityTestSuite {
         pass();
     }
 
-    private static void testHindiSynthesizer() {
+    @Test
+    public void testHindiSynthesizer() {
         startTest("HindiExplanationSynthesizer generates plain Hindi guidance for elders");
         dev.saathi.shield.network.PhishingUrlScanner scanner = new dev.saathi.shield.network.PhishingUrlScanner();
         var phishingResult = scanner.scanUrl("http://sbi-fake-kyc.biz");
@@ -81,7 +86,8 @@ public class SaathiSecurityTestSuite {
         pass();
     }
 
-    private static void testApkScannerViewModel() {
+    @Test
+    public void testApkScannerViewModel() {
         startTest("ApkScannerViewModel state management and Senior Mode toggle");
         dev.saathi.ui.viewmodel.ApkScannerViewModel vm = new dev.saathi.ui.viewmodel.ApkScannerViewModel(null, null);
         assertFalse(vm.getCurrentState().isSeniorModeActive(), "Starts with Standard Mode");
@@ -90,7 +96,8 @@ public class SaathiSecurityTestSuite {
         pass();
     }
 
-    private static void testScreenShareRule() {
+    @Test
+    public void testScreenShareRule() {
         startTest("ScreenShareAbuseRule triggers on repackaged AnyDesk/QuickSupport");
         dev.saathi.rules.ScreenShareAbuseRule rule = new dev.saathi.rules.ScreenShareAbuseRule();
         ManifestMetadata manifest = new ManifestMetadata(
@@ -107,7 +114,8 @@ public class SaathiSecurityTestSuite {
         pass();
     }
 
-    private static void testTollFraudRule() {
+    @Test
+    public void testTollFraudRule() {
         startTest("TollFraudSmsRule triggers on SEND_SMS + READ_PHONE_STATE + INTERNET");
         dev.saathi.rules.TollFraudSmsRule rule = new dev.saathi.rules.TollFraudSmsRule();
         ManifestMetadata manifest = new ManifestMetadata(
@@ -122,7 +130,8 @@ public class SaathiSecurityTestSuite {
         pass();
     }
 
-    private static void testLocalStorageRetention() {
+    @Test
+    public void testLocalStorageRetention() {
         startTest("LocalStorageRepository prunes records exceeding retention days");
         dev.saathi.storage.LocalStorageRepository repo = new dev.saathi.storage.LocalStorageRepository();
         repo.setRetentionDays(14);
@@ -131,7 +140,8 @@ public class SaathiSecurityTestSuite {
         pass();
     }
 
-    private static void testInstallHandoff() {
+    @Test
+    public void testInstallHandoff() {
         startTest("ApkInstallHandoffHelper builds valid system install intent without REQUEST_INSTALL_PACKAGES");
         var intent = dev.saathi.engine.ApkInstallHandoffHelper.createSystemInstallIntent("content://dev.saathi/scans/app.apk");
         assertEquals("android.intent.action.VIEW", intent.action);
@@ -140,7 +150,8 @@ public class SaathiSecurityTestSuite {
         pass();
     }
 
-    private static void testBinaryXmlParser() {
+    @Test
+    public void testBinaryXmlParser() {
         startTest("BinaryXmlDecoder plain text manifest parsing");
         String xml = "<manifest package=\"com.test.app\" xmlns:android=\"http://schemas.android.com/apk/res/android\">\n" +
                      "  <uses-permission android:name=\"android.permission.INTERNET\"/>\n" +
@@ -163,7 +174,8 @@ public class SaathiSecurityTestSuite {
         pass();
     }
 
-    private static void testBankingTrojanRule() {
+    @Test
+    public void testBankingTrojanRule() {
         startTest("BankingTrojanPatternRule triggers on Overlay + Accessibility");
         BankingTrojanPatternRule rule = new BankingTrojanPatternRule();
         ManifestMetadata manifest = new ManifestMetadata(
@@ -180,7 +192,8 @@ public class SaathiSecurityTestSuite {
         pass();
     }
 
-    private static void testOtpStealerRule() {
+    @Test
+    public void testOtpStealerRule() {
         startTest("OtpStealerPatternRule triggers on SMS + Dynamic Dex loading");
         OtpStealerPatternRule rule = new OtpStealerPatternRule();
         ManifestMetadata manifest = new ManifestMetadata(
@@ -202,7 +215,8 @@ public class SaathiSecurityTestSuite {
         pass();
     }
 
-    private static void testVerdictDetermination() {
+    @Test
+    public void testVerdictDetermination() {
         startTest("ThreatRuleEvaluator maps critical indicators to HIGH_RISK / KNOWN_MALICIOUS");
         ThreatRuleEvaluator evaluator = new ThreatRuleEvaluator();
 
@@ -219,12 +233,15 @@ public class SaathiSecurityTestSuite {
 
         // Known hash -> KNOWN_MALICIOUS
         String knownHash = "3a019b88f8d2dfbb187b47b4d187bdf559ef14c1d686f0b4d45543c8d1720d29";
+        assertEquals(ScanVerdict.NO_KNOWN_THREAT_DETECTED, evaluator.determineVerdict(knownHash, Collections.emptyList(), true)); // nothing embedded
+        evaluator.registerKnownMaliciousHash(knownHash); // as a configured threat feed would
         ScanVerdict v3 = evaluator.determineVerdict(knownHash, Collections.emptyList(), true);
         assertEquals(ScanVerdict.KNOWN_MALICIOUS, v3);
         pass();
     }
 
-    private static void testHinglishSenseEngine() {
+    @Test
+    public void testHinglishSenseEngine() {
         startTest("SaathiSenseEngine accurately separates benign birthday secret from predatory coercion");
         SaathiSenseEngine engine = new SaathiSenseEngine();
 

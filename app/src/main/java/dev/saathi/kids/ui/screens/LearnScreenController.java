@@ -3,290 +3,166 @@ package dev.saathi.kids.ui.screens;
 import android.app.Activity;
 import android.graphics.Color;
 import android.graphics.Typeface;
-import android.graphics.drawable.GradientDrawable;
 import android.view.Gravity;
 import android.view.View;
-import android.view.ViewGroup;
-import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
-import dev.saathi.kids.ui.model.Lesson;
-import dev.saathi.kids.ui.state.KidsAppState;
+import dev.saathi.kids.KidsServices;
+import dev.saathi.kids.ui.Ui;
+import dev.saathi.learn.LessonCatalog;
 
-import java.util.List;
+import java.util.Set;
 
-/**
- * Saathi Kids Learn Screen.
- * Displays all 8 digital safety scenario quests with completion badges and progress tracking.
- * Tapping any scenario opens LessonDetailOverlay.
- */
+/** Learn screen: lessons from the bundled versioned content, progress from stored completions. */
 public class LearnScreenController {
 
     public interface LearnNavigationHost {
-        void showLessonDetail(Lesson lesson);
+        void showLessonDetail(String lessonId);
     }
+
+    private enum Filter { ALL, TODO, DONE }
 
     private final Activity activity;
     private final LearnNavigationHost host;
-    private final float density;
+    private final KidsServices svc;
+    private final Runnable listener = this::render;
 
-    private ScrollView rootView;
-    private LinearLayout containerLessonsList;
-    private TextView tvProgressStats;
+    private ScrollView root;
+    private LinearLayout list;
+    private TextView progressText;
     private ProgressBar progressBar;
+    private LinearLayout filters;
+    private Filter filter = Filter.ALL;
 
     public LearnScreenController(Activity activity, LearnNavigationHost host) {
         this.activity = activity;
         this.host = host;
-        this.density = activity.getResources().getDisplayMetrics().density;
-        createView();
-        KidsAppState.getInstance().addListener(this::render);
+        this.svc = KidsServices.get(activity);
+        build();
+        svc.repo.addListener(listener);
     }
 
     public View getView() {
-        return rootView;
+        return root;
     }
 
-    private void createView() {
-        rootView = new ScrollView(activity);
-        rootView.setLayoutParams(new ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-        ));
-        rootView.setFillViewport(true);
-        rootView.setBackgroundColor(Color.parseColor("#F7F7F5"));
+    private int dp(int v) {
+        return Ui.dp(activity, v);
+    }
 
-        LinearLayout layout = new LinearLayout(activity);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setPadding(dp(20), dp(20), dp(20), dp(60));
+    private void build() {
+        root = new ScrollView(activity);
+        root.setFillViewport(true);
+        root.setBackgroundColor(Ui.BG);
+        LinearLayout l = new LinearLayout(activity);
+        l.setOrientation(LinearLayout.VERTICAL);
+        l.setPadding(dp(20), dp(20), dp(20), dp(60));
+        root.addView(l);
 
-        // 1. Header
-        layout.addView(buildHeader());
+        TextView h = Ui.text(activity, "Safety Lessons 🛡️", 24f, Ui.INK, true);
+        h.setTypeface(Typeface.create("sans-serif-black", Typeface.BOLD));
+        l.addView(h);
+        TextView sub = Ui.text(activity, "Short stories about tricky situations online, and what you can do.", 13.5f, Color.parseColor("#555555"), false);
+        sub.setPadding(0, dp(4), 0, dp(14));
+        l.addView(sub);
 
-        // 2. Progress Overview Card
-        layout.addView(buildProgressCard());
+        LinearLayout card = Ui.vcard(activity);
+        progressText = Ui.text(activity, "", 14f, Ui.GREEN, true);
+        card.addView(progressText);
+        progressBar = new ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal);
+        card.addView(progressBar);
+        l.addView(card);
 
-        // 3. Lessons Section Title
-        TextView tvSectionTitle = new TextView(activity);
-        tvSectionTitle.setText("All Safety Quests (8)");
-        tvSectionTitle.setTextSize(14f);
-        tvSectionTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        tvSectionTitle.setTextColor(Color.parseColor("#141414"));
-        LinearLayout.LayoutParams stLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        stLp.bottomMargin = dp(12);
-        layout.addView(tvSectionTitle, stLp);
-
-        // 4. Lessons List Container
-        containerLessonsList = new LinearLayout(activity);
-        containerLessonsList.setOrientation(LinearLayout.VERTICAL);
-        layout.addView(containerLessonsList);
-
-        rootView.addView(layout);
+        filters = Ui.row(activity);
+        filters.setPadding(0, 0, 0, dp(10));
+        l.addView(filters);
+        list = new LinearLayout(activity);
+        list.setOrientation(LinearLayout.VERTICAL);
+        l.addView(list);
         render();
     }
 
-    private View buildHeader() {
-        LinearLayout box = new LinearLayout(activity);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(0, dp(4), 0, dp(14));
-
-        TextView tvTitle = new TextView(activity);
-        tvTitle.setText("Safety Quests 🛡️");
-        tvTitle.setTextSize(24f);
-        tvTitle.setTypeface(Typeface.create("sans-serif-black", Typeface.BOLD));
-        tvTitle.setTextColor(Color.parseColor("#141414"));
-        box.addView(tvTitle);
-
-        TextView tvSub = new TextView(activity);
-        tvSub.setText("Short, real-world interactive situations. Learn how to spot scam tricks and stay in control.");
-        tvSub.setTextSize(13.5f);
-        tvSub.setTextColor(Color.parseColor("#555555"));
-        tvSub.setLineSpacing(dp(2), 1.15f);
-        LinearLayout.LayoutParams subLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        subLp.topMargin = dp(4);
-        box.addView(tvSub, subLp);
-
-        return box;
-    }
-
-    private View buildProgressCard() {
-        LinearLayout card = new LinearLayout(activity);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setBackground(createCardDrawable(Color.WHITE, Color.parseColor("#E6E6E2"), dp(16)));
-        card.setPadding(dp(18), dp(18), dp(18), dp(18));
-
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.bottomMargin = dp(20);
-        card.setLayoutParams(lp);
-
-        LinearLayout topRow = new LinearLayout(activity);
-        topRow.setOrientation(LinearLayout.HORIZONTAL);
-        topRow.setGravity(Gravity.CENTER_VERTICAL);
-
-        TextView tvTitle = new TextView(activity);
-        tvTitle.setText("Your Quest Progress");
-        tvTitle.setTextSize(15f);
-        tvTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        tvTitle.setTextColor(Color.parseColor("#141414"));
-        LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
-        topRow.addView(tvTitle, titleLp);
-
-        tvProgressStats = new TextView(activity);
-        tvProgressStats.setTextSize(13f);
-        tvProgressStats.setTypeface(Typeface.DEFAULT_BOLD);
-        tvProgressStats.setTextColor(Color.parseColor("#386B57"));
-        topRow.addView(tvProgressStats);
-
-        card.addView(topRow);
-
-        progressBar = new ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal);
-        progressBar.setMax(8);
-        progressBar.setProgress(0);
-        LinearLayout.LayoutParams pbLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(8));
-        pbLp.topMargin = dp(10);
-        pbLp.bottomMargin = dp(8);
-        card.addView(progressBar, pbLp);
-
-        TextView tvDesc = new TextView(activity);
-        tvDesc.setText("Each quest takes about 2 minutes and teaches one powerful safety habit.");
-        tvDesc.setTextSize(12f);
-        tvDesc.setTextColor(Color.parseColor("#777777"));
-        card.addView(tvDesc);
-
-        return card;
-    }
-
     public void render() {
-        KidsAppState state = KidsAppState.getInstance();
-        List<Lesson> lessons = state.getAllLessons();
-
-        int completed = state.getCompletedLessonCount();
-        int total = lessons.size();
-
-        if (tvProgressStats != null) {
-            tvProgressStats.setText(completed + " / " + total + " Finished");
+        LessonCatalog cat = svc.lessons.getCatalog();
+        list.removeAllViews();
+        if (cat == null) {
+            progressText.setText("Lessons unavailable");
+            progressBar.setProgress(0);
+            LinearLayout c = Ui.vcard(activity);
+            c.addView(Ui.body(activity, svc.lessons.getError()));
+            list.addView(c);
+            return;
         }
-        if (progressBar != null) {
-            progressBar.setMax(total);
-            progressBar.setProgress(completed);
-        }
+        Set<String> done = svc.repo.getCompletedLessonIds();
+        int completed = cat.completedCount(done);
+        int total = cat.lessons.size();
+        progressText.setText(completed + " of " + total + " lessons done");
+        progressBar.setMax(total);
+        progressBar.setProgress(completed);
 
-        if (containerLessonsList != null) {
-            containerLessonsList.removeAllViews();
-            for (Lesson lesson : lessons) {
-                containerLessonsList.addView(buildLessonItemView(lesson));
-            }
+        filters.removeAllViews();
+        addFilter("All (" + total + ")", Filter.ALL);
+        addFilter("To do (" + (total - completed) + ")", Filter.TODO);
+        addFilter("Done (" + completed + ")", Filter.DONE);
+
+        String lang = svc.repo.getLanguage();
+        int shown = 0;
+        for (LessonCatalog.Lesson lesson : cat.lessons) {
+            boolean isDone = done.contains(lesson.id);
+            if (filter == Filter.TODO && isDone) continue;
+            if (filter == Filter.DONE && !isDone) continue;
+            list.addView(item(lesson, isDone, lang));
+            shown++;
+        }
+        if (shown == 0) {
+            list.addView(Ui.body(activity, filter == Filter.DONE ? "No lessons finished yet." : "You've finished every lesson. 🎉"));
         }
     }
 
-    private View buildLessonItemView(Lesson lesson) {
-        LinearLayout card = new LinearLayout(activity);
-        card.setOrientation(LinearLayout.HORIZONTAL);
-        card.setGravity(Gravity.CENTER_VERTICAL);
-        card.setBackground(createCardDrawable(Color.WHITE, Color.parseColor("#E6E6E2"), dp(14)));
-        card.setPadding(dp(16), dp(16), dp(16), dp(16));
-
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.bottomMargin = dp(12);
-        card.setLayoutParams(lp);
-
-        // Emoji badge
-        TextView tvEmoji = new TextView(activity);
-        tvEmoji.setText(lesson.getEmoji());
-        tvEmoji.setTextSize(26f);
-        tvEmoji.setGravity(Gravity.CENTER);
-        tvEmoji.setBackground(createCardDrawable(Color.parseColor("#F5F5F3"), Color.parseColor("#EAEAE6"), dp(12)));
-        tvEmoji.setPadding(dp(10), dp(10), dp(10), dp(10));
-        LinearLayout.LayoutParams emojiLp = new LinearLayout.LayoutParams(
-                dp(48), dp(48));
-        emojiLp.rightMargin = dp(14);
-        card.addView(tvEmoji, emojiLp);
-
-        // Middle Text Info
-        LinearLayout textCol = new LinearLayout(activity);
-        textCol.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout.LayoutParams textColLp = new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
-        textColLp.rightMargin = dp(10);
-        textCol.setLayoutParams(textColLp);
-
-        TextView tvTitle = new TextView(activity);
-        tvTitle.setText(lesson.getTitle());
-        tvTitle.setTextSize(14.5f);
-        tvTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        tvTitle.setTextColor(Color.parseColor("#141414"));
-        textCol.addView(tvTitle);
-
-        TextView tvSub = new TextView(activity);
-        tvSub.setText(lesson.getSubtitle());
-        tvSub.setTextSize(12f);
-        tvSub.setTextColor(Color.parseColor("#666666"));
-        tvSub.setLineSpacing(dp(2), 1.15f);
-        LinearLayout.LayoutParams subLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        subLp.topMargin = dp(3);
-        subLp.bottomMargin = dp(6);
-        textCol.addView(tvSub, subLp);
-
-        // Status badge
-        TextView tvStatus = new TextView(activity);
-        if (lesson.isCompleted()) {
-            tvStatus.setText("COMPLETED ✅");
-            tvStatus.setTextColor(Color.parseColor("#386B57"));
-            tvStatus.setBackground(createBadgeDrawable(Color.parseColor("#EAF3ED"), dp(8)));
-        } else {
-            tvStatus.setText("READY TO PLAY 🚀");
-            tvStatus.setTextColor(Color.parseColor("#855A12"));
-            tvStatus.setBackground(createBadgeDrawable(Color.parseColor("#F8F0DF"), dp(8)));
-        }
-        tvStatus.setTextSize(10f);
-        tvStatus.setTypeface(Typeface.DEFAULT_BOLD);
-        tvStatus.setPadding(dp(8), dp(3), dp(8), dp(3));
-        LinearLayout.LayoutParams statusLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        textCol.addView(tvStatus, statusLp);
-
-        card.addView(textCol);
-
-        // Arrow icon
-        TextView tvArrow = new TextView(activity);
-        tvArrow.setText("→");
-        tvArrow.setTextSize(18f);
-        tvArrow.setTextColor(Color.parseColor("#999999"));
-        card.addView(tvArrow);
-
-        card.setOnClickListener(v -> {
-            if (host != null) host.showLessonDetail(lesson);
+    private void addFilter(String label, Filter f) {
+        TextView t = Ui.text(activity, label, 12f, f == filter ? Color.WHITE : Ui.INK, true);
+        t.setBackground(f == filter ? Ui.solid(activity, Ui.INK, 16) : Ui.card(activity, Color.WHITE, Color.parseColor("#E0E0DC"), 16));
+        t.setPadding(dp(12), dp(6), dp(12), dp(6));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.rightMargin = dp(8);
+        t.setOnClickListener(v -> {
+            filter = f;
+            render();
         });
+        filters.addView(t, lp);
+    }
 
+    private View item(LessonCatalog.Lesson lesson, boolean isDone, String lang) {
+        LessonCatalog.Text txt = lesson.text(lang);
+        LinearLayout card = Ui.row(activity);
+        card.setBackground(Ui.card(activity, Color.WHITE, Color.parseColor("#E6E6E2"), 14));
+        card.setPadding(dp(16), dp(14), dp(16), dp(14));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.bottomMargin = dp(10);
+        card.setLayoutParams(lp);
+        TextView icon = Ui.text(activity, lesson.icon, 24f, Ui.INK, false);
+        icon.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(dp(44), dp(44));
+        ilp.rightMargin = dp(12);
+        card.addView(icon, ilp);
+        LinearLayout col = new LinearLayout(activity);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.addView(Ui.text(activity, txt.title, 14.5f, Ui.INK, true));
+        col.addView(Ui.text(activity, txt.subtitle, 12f, Ui.MUTED, false));
+        if (!lesson.hasLanguage(lang)) col.addView(Ui.note(activity, "Not translated yet — shown in English"));
+        TextView status = Ui.text(activity, isDone ? "DONE ✅" : "NOT STARTED", 10f, isDone ? Ui.GREEN : Ui.AMBER, true);
+        status.setPadding(0, dp(4), 0, 0);
+        col.addView(status);
+        card.addView(col, Ui.weight(1f));
+        card.addView(Ui.text(activity, "→", 18f, Color.parseColor("#999999"), false));
+        card.setOnClickListener(v -> host.showLessonDetail(lesson.id));
         return card;
     }
 
-    private int dp(int value) {
-        return Math.round(value * density);
-    }
-
-    private GradientDrawable createCardDrawable(int bgColor, int strokeColor, int radiusPx) {
-        GradientDrawable gd = new GradientDrawable();
-        gd.setColor(bgColor);
-        gd.setStroke(dp(1), strokeColor);
-        gd.setCornerRadius(radiusPx);
-        return gd;
-    }
-
-    private GradientDrawable createBadgeDrawable(int bgColor, int radiusPx) {
-        GradientDrawable gd = new GradientDrawable();
-        gd.setColor(bgColor);
-        gd.setCornerRadius(radiusPx);
-        return gd;
+    public void onDestroy() {
+        svc.repo.removeListener(listener);
     }
 }

@@ -1,394 +1,477 @@
 package dev.saathi.kids.ui.components;
 
-import android.content.Context;
+import android.app.Activity;
+import android.content.ActivityNotFoundException;
+import android.content.Intent;
 import android.graphics.Color;
-import android.graphics.Typeface;
+import android.net.Uri;
+import android.text.InputFilter;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
+import android.widget.Switch;
 import android.widget.TextView;
+import android.widget.Toast;
 
-import dev.saathi.kids.ui.model.SosRequest;
+import dev.saathi.family.FamilyStatus;
+import dev.saathi.family.TrustedAdultValidator;
+import dev.saathi.help.HelpRequest;
+import dev.saathi.help.HelpRequestService;
+import dev.saathi.help.HelpRequestStatus;
+import dev.saathi.kids.KidsServices;
+import dev.saathi.kids.ui.Ui;
 import dev.saathi.kids.ui.model.TrustedAdult;
-import dev.saathi.kids.ui.state.KidsAppState;
 
+import java.text.DateFormat;
+import java.util.Date;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
- * 4-Step transparent, child-safe Help / SOS Flow.
- * Allows a child to categorize their worry, select a trusted adult, preview the message,
- * and view truthful confirmation stating that demo mode does not silently message anyone.
+ * Help request flow: reason → recipient → (optional) location → preview → confirm → real send → real status.
+ * Only adults paired through Saathi Personal (confirmed by the server) can receive a request. Status shown is
+ * exactly what the server reports; "seen" is only shown after the adult acknowledges in their app.
  */
 public class SosFlowOverlay {
 
-    public interface SosCallback {
-        void onDismissed();
+    public interface Host {
+        void dismissOverlay();
+        /** Asks Android for ACCESS_COARSE_LOCATION; calls back with the result. */
+        void requestCoarseLocation(Runnable onGranted, Runnable onDenied);
     }
 
-    private final Context context;
-    private final FrameLayout container;
-    private final SosCallback callback;
-
-    private int step = 0;
-    private String selectedCategory = "I feel uncomfortable or unsafe";
-    private TrustedAdult selectedAdult = null;
-
-    private final String[] categories = new String[]{
-            "Someone is being mean to me",
-            "Someone is pressuring me",
-            "I clicked or shared something by mistake",
-            "I feel uncomfortable or unsafe",
-            "Something else confusing"
+    private static final String[][] REASONS = {
+            {"someone_mean", "Someone is being mean to me"},
+            {"pressure", "Someone is pressuring me"},
+            {"shared_by_mistake", "I clicked or shared something by mistake"},
+            {"unsafe", "I feel uncomfortable or unsafe"},
+            {"something_else", "Something else is confusing me"},
     };
 
-    public SosFlowOverlay(Context context, FrameLayout container, SosCallback callback) {
-        this.context = context;
+    private final Activity activity;
+    private final FrameLayout container;
+    private final Host host;
+    private final KidsServices svc;
+    private final ExecutorService worker = Executors.newSingleThreadExecutor();
+
+    private int step = 0;
+    private String reason;
+    private String note = "";
+    private FamilyStatus family;
+    private FamilyStatus.Adult recipient;
+    private boolean wantLocation;
+    private HelpRequest.LocationChoice locationChoice = HelpRequest.LocationChoice.NOT_SHARED;
+    private HelpRequest.Location location;
+    private HelpRequest current;
+    private boolean busy;
+
+    public SosFlowOverlay(Activity activity, FrameLayout container, Host host) {
+        this.activity = activity;
         this.container = container;
-        this.callback = callback;
+        this.host = host;
+        this.svc = KidsServices.get(activity);
     }
 
     public void show() {
-        container.removeAllViews();
         container.setVisibility(View.VISIBLE);
         step = 0;
-        List<TrustedAdult> adults = KidsAppState.getInstance().getTrustedAdults();
-        selectedAdult = adults.isEmpty() ? null : adults.get(0);
-        renderCurrentStep();
+        render();
     }
 
-    private void renderCurrentStep() {
-        container.removeAllViews();
-
-        ScrollView scroll = new ScrollView(context);
-        scroll.setLayoutParams(new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
-        scroll.setBackgroundColor(Color.parseColor("#F7F7F5"));
-
-        LinearLayout root = new LinearLayout(context);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(24), dp(36), dp(24), dp(36));
-        scroll.addView(root);
-
-        // Header with Close / Cancel
-        LinearLayout topBar = new LinearLayout(context);
-        topBar.setOrientation(LinearLayout.HORIZONTAL);
-        topBar.setGravity(Gravity.CENTER_VERTICAL);
-
-        TextView tvTitle = new TextView(context);
-        tvTitle.setText("Ask for Help 🤝");
-        tvTitle.setTextSize(22f);
-        tvTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        tvTitle.setTextColor(Color.parseColor("#141414"));
-        LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f);
-        tvTitle.setLayoutParams(titleLp);
-        topBar.addView(tvTitle);
-
-        Button btnClose = new Button(context);
-        btnClose.setText("✕");
-        btnClose.setTextColor(Color.parseColor("#666666"));
-        btnClose.setBackgroundColor(Color.TRANSPARENT);
-        btnClose.setTextSize(18f);
-        btnClose.setOnClickListener(v -> dismiss());
-        topBar.addView(btnClose);
-
-        root.addView(topBar);
-
-        TextView tvReassure = new TextView(context);
-        tvReassure.setText("You are never in trouble for asking for help. We are here to support you.");
-        tvReassure.setTextSize(14f);
-        tvReassure.setTextColor(Color.parseColor("#386B57"));
-        tvReassure.setBackgroundColor(Color.parseColor("#EAF3ED"));
-        tvReassure.setPadding(dp(12), dp(8), dp(12), dp(8));
-        LinearLayout.LayoutParams rLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        rLp.setMargins(0, dp(12), 0, dp(20));
-        tvReassure.setLayoutParams(rLp);
-        root.addView(tvReassure);
-
-        if (step == 0) {
-            renderStepCategory(root);
-        } else if (step == 1) {
-            renderStepAdult(root);
-        } else if (step == 2) {
-            renderStepPreview(root);
-        } else {
-            renderStepComplete(root);
+    /** Android Back: go to the previous step; returns false when the overlay should close. */
+    public boolean onBack() {
+        if (busy) return true;
+        if (step > 0 && step < 4) {
+            step--;
+            render();
+            return true;
         }
-
-        container.addView(scroll);
-    }
-
-    private void renderStepCategory(LinearLayout root) {
-        TextView tvPrompt = new TextView(context);
-        tvPrompt.setText("Step 1 of 3: What happened?");
-        tvPrompt.setTextSize(16f);
-        tvPrompt.setTypeface(Typeface.DEFAULT_BOLD);
-        tvPrompt.setTextColor(Color.parseColor("#141414"));
-        tvPrompt.setPadding(0, 0, 0, dp(12));
-        root.addView(tvPrompt);
-
-        for (String cat : categories) {
-            boolean isSelected = cat.equals(selectedCategory);
-            Button btnCat = new Button(context);
-            btnCat.setText((isSelected ? "●  " : "○  ") + cat);
-            btnCat.setTextSize(14f);
-            btnCat.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-            btnCat.setTextColor(isSelected ? Color.WHITE : Color.parseColor("#141414"));
-            btnCat.setBackgroundColor(isSelected ? Color.parseColor("#151515") : Color.WHITE);
-            btnCat.setPadding(dp(16), dp(14), dp(16), dp(14));
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-            lp.setMargins(0, 0, 0, dp(8));
-            btnCat.setLayoutParams(lp);
-            btnCat.setOnClickListener(v -> {
-                selectedCategory = cat;
-                renderCurrentStep();
-            });
-            root.addView(btnCat);
-        }
-
-        Button btnNext = new Button(context);
-        btnNext.setText("NEXT: CHOOSE ADULT →");
-        btnNext.setTextColor(Color.WHITE);
-        btnNext.setTextSize(14f);
-        btnNext.setTypeface(Typeface.DEFAULT_BOLD);
-        btnNext.setBackgroundColor(Color.parseColor("#151515"));
-        LinearLayout.LayoutParams btnLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(52));
-        btnLp.setMargins(0, dp(24), 0, 0);
-        btnNext.setLayoutParams(btnLp);
-        btnNext.setOnClickListener(v -> {
-            step = 1;
-            renderCurrentStep();
-        });
-        root.addView(btnNext);
-    }
-
-    private void renderStepAdult(LinearLayout root) {
-        TextView tvPrompt = new TextView(context);
-        tvPrompt.setText("Step 2 of 3: Who do you want to tell?");
-        tvPrompt.setTextSize(16f);
-        tvPrompt.setTypeface(Typeface.DEFAULT_BOLD);
-        tvPrompt.setTextColor(Color.parseColor("#141414"));
-        tvPrompt.setPadding(0, 0, 0, dp(12));
-        root.addView(tvPrompt);
-
-        List<TrustedAdult> adults = KidsAppState.getInstance().getTrustedAdults();
-        for (TrustedAdult adult : adults) {
-            boolean isSelected = selectedAdult != null && selectedAdult.getId().equals(adult.getId());
-            Button btnAdult = new Button(context);
-            btnAdult.setText((isSelected ? "●  " : "○  ") + adult.getName() + " (" + adult.getRelation() + ")");
-            btnAdult.setTextSize(14f);
-            btnAdult.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-            btnAdult.setTextColor(isSelected ? Color.WHITE : Color.parseColor("#141414"));
-            btnAdult.setBackgroundColor(isSelected ? Color.parseColor("#151515") : Color.WHITE);
-            btnAdult.setPadding(dp(16), dp(14), dp(16), dp(14));
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-            lp.setMargins(0, 0, 0, dp(8));
-            btnAdult.setLayoutParams(lp);
-            btnAdult.setOnClickListener(v -> {
-                selectedAdult = adult;
-                renderCurrentStep();
-            });
-            root.addView(btnAdult);
-        }
-
-        LinearLayout navRow = new LinearLayout(context);
-        navRow.setOrientation(LinearLayout.HORIZONTAL);
-        LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(52));
-        rowLp.setMargins(0, dp(24), 0, 0);
-        navRow.setLayoutParams(rowLp);
-
-        Button btnBack = new Button(context);
-        btnBack.setText("← BACK");
-        btnBack.setTextColor(Color.parseColor("#141414"));
-        btnBack.setBackgroundColor(Color.WHITE);
-        btnBack.setTextSize(14f);
-        LinearLayout.LayoutParams bLp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.0f);
-        bLp.setMargins(0, 0, dp(8), 0);
-        btnBack.setLayoutParams(bLp);
-        btnBack.setOnClickListener(v -> {
-            step = 0;
-            renderCurrentStep();
-        });
-        navRow.addView(btnBack);
-
-        Button btnNext = new Button(context);
-        btnNext.setText("PREVIEW MESSAGE →");
-        btnNext.setTextColor(Color.WHITE);
-        btnNext.setBackgroundColor(Color.parseColor("#151515"));
-        btnNext.setTextSize(14f);
-        btnNext.setTypeface(Typeface.DEFAULT_BOLD);
-        btnNext.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.5f));
-        btnNext.setOnClickListener(v -> {
-            step = 2;
-            renderCurrentStep();
-        });
-        navRow.addView(btnNext);
-
-        root.addView(navRow);
-    }
-
-    private void renderStepPreview(LinearLayout root) {
-        TextView tvPrompt = new TextView(context);
-        tvPrompt.setText("Step 3 of 3: Preview what you will send");
-        tvPrompt.setTextSize(16f);
-        tvPrompt.setTypeface(Typeface.DEFAULT_BOLD);
-        tvPrompt.setTextColor(Color.parseColor("#141414"));
-        tvPrompt.setPadding(0, 0, 0, dp(12));
-        root.addView(tvPrompt);
-
-        // Preview Message Card
-        LinearLayout card = new LinearLayout(context);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setBackgroundColor(Color.WHITE);
-        card.setPadding(dp(16), dp(16), dp(16), dp(16));
-
-        TextView tvTo = new TextView(context);
-        String adultName = selectedAdult != null ? selectedAdult.getName() : "Trusted Adult";
-        tvTo.setText("To: " + adultName);
-        tvTo.setTextSize(14f);
-        tvTo.setTypeface(Typeface.DEFAULT_BOLD);
-        tvTo.setTextColor(Color.parseColor("#141414"));
-        card.addView(tvTo);
-
-        TextView tvMsg = new TextView(context);
-        String messageBody = "“Hi " + adultName + ", something happened on my phone (" + selectedCategory + ") and I feel uncomfortable. Can you please sit with me and take a look?”";
-        tvMsg.setText(messageBody);
-        tvMsg.setTextSize(14f);
-        tvMsg.setTextColor(Color.parseColor("#444444"));
-        tvMsg.setLineSpacing(dp(2), 1.2f);
-        tvMsg.setPadding(0, dp(12), 0, dp(8));
-        card.addView(tvMsg);
-
-        root.addView(card);
-
-        // Note
-        TextView tvNote = new TextView(context);
-        tvNote.setText("Note: In this preview demo, no actual SMS or network call will be triggered.");
-        tvNote.setTextSize(12f);
-        tvNote.setTextColor(Color.parseColor("#888888"));
-        tvNote.setPadding(0, dp(12), 0, dp(20));
-        root.addView(tvNote);
-
-        LinearLayout navRow = new LinearLayout(context);
-        navRow.setOrientation(LinearLayout.HORIZONTAL);
-        LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(52));
-        navRow.setLayoutParams(rowLp);
-
-        Button btnBack = new Button(context);
-        btnBack.setText("← EDIT");
-        btnBack.setTextColor(Color.parseColor("#141414"));
-        btnBack.setBackgroundColor(Color.WHITE);
-        btnBack.setTextSize(14f);
-        LinearLayout.LayoutParams bLp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.0f);
-        bLp.setMargins(0, 0, dp(8), 0);
-        btnBack.setLayoutParams(bLp);
-        btnBack.setOnClickListener(v -> {
-            step = 1;
-            renderCurrentStep();
-        });
-        navRow.addView(btnBack);
-
-        Button btnSend = new Button(context);
-        btnSend.setText("CONFIRM HELP REQUEST");
-        btnSend.setTextColor(Color.WHITE);
-        btnSend.setBackgroundColor(Color.parseColor("#386B57"));
-        btnSend.setTextSize(14f);
-        btnSend.setTypeface(Typeface.DEFAULT_BOLD);
-        btnSend.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 2.0f));
-        btnSend.setOnClickListener(v -> {
-            // Record local SOS demo event
-            SosRequest req = new SosRequest(
-                    "sos_" + System.currentTimeMillis(),
-                    selectedCategory,
-                    selectedAdult != null ? selectedAdult.getName() : "Trusted Adult",
-                    selectedAdult != null ? selectedAdult.getContactInfo() : "None",
-                    messageBody,
-                    System.currentTimeMillis(),
-                    true
-            );
-            KidsAppState.getInstance().recordSosRequest(req);
-            step = 3;
-            renderCurrentStep();
-        });
-        navRow.addView(btnSend);
-
-        root.addView(navRow);
-    }
-
-    private void renderStepComplete(LinearLayout root) {
-        TextView tvBadge = new TextView(context);
-        tvBadge.setText("REQUEST LOGGED LOCALLY");
-        tvBadge.setTextSize(11f);
-        tvBadge.setTypeface(Typeface.DEFAULT_BOLD);
-        tvBadge.setTextColor(Color.parseColor("#386B57"));
-        tvBadge.setBackgroundColor(Color.parseColor("#EAF3ED"));
-        tvBadge.setPadding(dp(12), dp(4), dp(12), dp(4));
-        root.addView(tvBadge);
-
-        TextView tvDone = new TextView(context);
-        tvDone.setText("You took the right step! 🌟");
-        tvDone.setTextSize(22f);
-        tvDone.setTypeface(Typeface.DEFAULT_BOLD);
-        tvDone.setTextColor(Color.parseColor("#141414"));
-        tvDone.setPadding(0, dp(12), 0, dp(8));
-        root.addView(tvDone);
-
-        // Truthful Demo Notice Card
-        LinearLayout noticeCard = new LinearLayout(context);
-        noticeCard.setOrientation(LinearLayout.VERTICAL);
-        noticeCard.setBackgroundColor(Color.parseColor("#F8F0DF"));
-        noticeCard.setPadding(dp(16), dp(16), dp(16), dp(16));
-        LinearLayout.LayoutParams nLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        nLp.setMargins(0, dp(8), 0, dp(20));
-        noticeCard.setLayoutParams(nLp);
-
-        TextView tvNoticeTitle = new TextView(context);
-        tvNoticeTitle.setText("⚠️ Truthful Demo Notice");
-        tvNoticeTitle.setTextSize(14f);
-        tvNoticeTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        tvNoticeTitle.setTextColor(Color.parseColor("#855A12"));
-        noticeCard.addView(tvNoticeTitle);
-
-        TextView tvNoticeBody = new TextView(context);
-        String adultName = selectedAdult != null ? selectedAdult.getName() : "your trusted adult";
-        tvNoticeBody.setText("This was a demo request. No one was contacted outside this app.\n\nBecause this is an on-device demonstration, please speak with " + adultName + " directly in person or show them your phone right now.");
-        tvNoticeBody.setTextSize(13f);
-        tvNoticeBody.setTextColor(Color.parseColor("#654810"));
-        tvNoticeBody.setPadding(0, dp(8), 0, 0);
-        noticeCard.addView(tvNoticeBody);
-
-        root.addView(noticeCard);
-
-        // Action: Close
-        Button btnFinish = new Button(context);
-        btnFinish.setText("RETURN TO HOME");
-        btnFinish.setTextColor(Color.WHITE);
-        btnFinish.setBackgroundColor(Color.parseColor("#151515"));
-        btnFinish.setTextSize(14f);
-        btnFinish.setTypeface(Typeface.DEFAULT_BOLD);
-        LinearLayout.LayoutParams fLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(52));
-        btnFinish.setLayoutParams(fLp);
-        btnFinish.setOnClickListener(v -> dismiss());
-        root.addView(btnFinish);
-    }
-
-    private void dismiss() {
-        container.setVisibility(View.GONE);
-        container.removeAllViews();
-        if (callback != null) callback.onDismissed();
+        return false;
     }
 
     private int dp(int v) {
-        return Math.round(v * context.getResources().getDisplayMetrics().density);
+        return Ui.dp(activity, v);
+    }
+
+    private void render() {
+        container.removeAllViews();
+        ScrollView scroll = new ScrollView(activity);
+        scroll.setBackgroundColor(Ui.BG);
+        LinearLayout root = new LinearLayout(activity);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(24), dp(32), dp(24), dp(36));
+        scroll.addView(root);
+
+        LinearLayout top = Ui.row(activity);
+        top.addView(Ui.text(activity, "Ask for help 🤝", 22f, Ui.INK, true), Ui.weight(1f));
+        Button close = new Button(activity);
+        close.setText("✕");
+        close.setBackgroundColor(Color.TRANSPARENT);
+        close.setOnClickListener(v -> { if (!busy) host.dismissOverlay(); });
+        top.addView(close);
+        root.addView(top);
+        TextView reassure = Ui.text(activity, "You are never in trouble for asking for help.", 14f, Ui.GREEN, false);
+        reassure.setBackgroundColor(Color.parseColor("#EAF3ED"));
+        reassure.setPadding(dp(12), dp(8), dp(12), dp(8));
+        root.addView(reassure);
+        View gap = new View(activity);
+        root.addView(gap, new LinearLayout.LayoutParams(1, dp(16)));
+
+        switch (step) {
+            case 0: stepReason(root); break;
+            case 1: stepRecipient(root); break;
+            case 2: stepLocation(root); break;
+            case 3: stepPreview(root); break;
+            default: stepResult(root); break;
+        }
+        container.addView(scroll);
+    }
+
+    // ---------------------------------------------------------------- step 0: reason
+
+    private void stepReason(LinearLayout root) {
+        root.addView(Ui.title(activity, "Step 1 of 4: What's happening?"));
+        for (String[] r : REASONS) {
+            boolean on = r[0].equals(reason);
+            Button b = Ui.secondary(activity, (on ? "●  " : "○  ") + r[1], v -> {
+                reason = r[0];
+                render();
+            });
+            b.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+            if (on) {
+                b.setTextColor(Color.WHITE);
+                b.setBackground(Ui.solid(activity, Ui.INK, 10));
+            }
+            root.addView(b);
+        }
+        root.addView(Ui.note(activity, "Want to add a few words? (optional)"));
+        EditText et = new EditText(activity);
+        et.setText(note);
+        et.setHint("You don't have to write anything");
+        et.setFilters(new InputFilter[]{new InputFilter.LengthFilter(HelpRequestService.MAX_NOTE)});
+        root.addView(et);
+        root.addView(Ui.primary(activity, "Next: choose who →", v -> {
+            if (reason == null) {
+                Toast.makeText(activity, "Pick the closest option above", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            note = et.getText() == null ? "" : et.getText().toString();
+            family = null;
+            step = 1;
+            render();
+        }));
+        addEarlierRequests(root);
+    }
+
+    // ---------------------------------------------------------------- step 1: recipient
+
+    private void stepRecipient(LinearLayout root) {
+        root.addView(Ui.title(activity, "Step 2 of 4: Who do you want to tell?"));
+        if (family == null) {
+            root.addView(Ui.body(activity, "Checking your family connection…"));
+            root.addView(new ProgressBar(activity));
+            worker.execute(() -> {
+                FamilyStatus fs = svc.pairing.fetchStatus();
+                activity.runOnUiThread(() -> {
+                    family = fs;
+                    if (step == 1) render();
+                });
+            });
+            return;
+        }
+        List<FamilyStatus.Adult> adults = family.helpRecipients();
+        if (!adults.isEmpty()) {
+            root.addView(Ui.note(activity, "These adults are connected through Saathi Personal and can receive your request:"));
+            for (FamilyStatus.Adult a : adults) {
+                boolean on = recipient != null && recipient.uid.equals(a.uid);
+                Button b = Ui.secondary(activity, (on ? "●  " : "○  ") + a.displayName, v -> {
+                    recipient = a;
+                    render();
+                });
+                b.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+                if (on) {
+                    b.setTextColor(Color.WHITE);
+                    b.setBackground(Ui.solid(activity, Ui.INK, 10));
+                }
+                root.addView(b);
+            }
+            Button next = Ui.primary(activity, "Next →", v -> {
+                if (recipient == null) {
+                    Toast.makeText(activity, "Choose an adult first", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                step = 2;
+                render();
+            });
+            root.addView(next);
+        } else {
+            LinearLayout warn = Ui.vcard(activity);
+            warn.setBackground(Ui.card(activity, Color.parseColor("#FFF6E5"), Color.parseColor("#F0E0C0"), 12));
+            warn.addView(Ui.text(activity, "Saathi can't send a request right now", 14f, Ui.AMBER, true));
+            warn.addView(Ui.body(activity, whyNoRecipients(family)));
+            root.addView(warn);
+            if (family.state == FamilyStatus.State.UNREACHABLE || family.state == FamilyStatus.State.ERROR) {
+                root.addView(Ui.secondary(activity, "Try again", v -> {
+                    family = null;
+                    render();
+                }));
+            }
+        }
+        addOtherWays(root);
+        root.addView(Ui.secondary(activity, "← Back", v -> {
+            step = 0;
+            render();
+        }));
+    }
+
+    private static String whyNoRecipients(FamilyStatus f) {
+        switch (f.state) {
+            case NOT_CONFIGURED: return "Sending help requests isn't set up in this version of the app. Please use one of the other ways below.";
+            case NOT_PAIRED: return "This phone isn't connected to a family yet. An adult can set this up with Saathi Personal (Settings → Family connection).";
+            case PENDING_CONFIRMATION: return "Your adult still needs to confirm the family connection in Saathi Personal.";
+            case REVOKED: return "The family connection was turned off.";
+            case UNREACHABLE: return "There's no internet connection, so a request can't be sent.";
+            case ACTIVE: return "No connected adult can receive requests yet.";
+            default: return "The Saathi server didn't give a usable answer.";
+        }
+    }
+
+    /** Real alternatives: the phone's dialer (the child presses call) and talking to someone nearby. */
+    private void addOtherWays(LinearLayout root) {
+        TextView t = Ui.text(activity, "Other ways to get help now", 13f, Ui.INK, true);
+        t.setPadding(0, dp(16), 0, 0);
+        root.addView(t);
+        root.addView(Ui.body(activity, "• Tell an adult who is near you — a parent, teacher or relative."));
+        List<TrustedAdult> saved = svc.repo.getTrustedAdults();
+        for (TrustedAdult a : saved) {
+            if (a.getPhone().isEmpty()) continue;
+            root.addView(Ui.secondary(activity, "📞  Call " + a.label(), v -> dial(TrustedAdultValidator.dialable(a.getPhone()))));
+        }
+        root.addView(Ui.secondary(activity, "📞  Call 1098 (CHILDLINE India, free, 24×7)", v -> dial("1098")));
+        root.addView(Ui.secondary(activity, "📞  Call 112 (Emergency)", v -> dial("112")));
+        root.addView(Ui.note(activity, "These buttons open your phone's dialer with the number filled in. You decide whether to press call. Saathi doesn't call or text anyone for you."));
+    }
+
+    private void dial(String number) {
+        try {
+            activity.startActivity(new Intent(Intent.ACTION_DIAL, Uri.parse("tel:" + number)));
+        } catch (ActivityNotFoundException e) {
+            Toast.makeText(activity, "This device can't make phone calls. Please ask someone nearby.", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    // ---------------------------------------------------------------- step 2: location
+
+    private void stepLocation(LinearLayout root) {
+        root.addView(Ui.title(activity, "Step 3 of 4: Share where you are? (optional)"));
+        root.addView(Ui.body(activity, "If you turn this on, your approximate area (about 100 m or more) is added to this one request so "
+                + recipient.displayName + " can find you. It is not tracked or updated afterwards."));
+        LinearLayout r = Ui.row(activity);
+        r.addView(Ui.text(activity, "Share my approximate location", 14f, Ui.INK, false), Ui.weight(1f));
+        Switch sw = new Switch(activity);
+        sw.setChecked(wantLocation);
+        r.addView(sw);
+        root.addView(r);
+        TextView state = Ui.note(activity, locationLabel());
+        root.addView(state);
+        sw.setOnCheckedChangeListener((b, on) -> {
+            wantLocation = on;
+            location = null;
+            locationChoice = HelpRequest.LocationChoice.NOT_SHARED;
+            if (!on) {
+                state.setText(locationLabel());
+                return;
+            }
+            state.setText("Getting your approximate location…");
+            Runnable fetch = () -> ApproxLocation.get(activity, 10_000, (choice, loc) -> {
+                locationChoice = choice;
+                location = loc;
+                if (step == 2) state.setText(locationLabel());
+            });
+            if (ApproxLocation.hasPermission(activity)) fetch.run();
+            else host.requestCoarseLocation(fetch, () -> {
+                locationChoice = HelpRequest.LocationChoice.PERMISSION_DENIED;
+                if (step == 2) state.setText(locationLabel());
+            });
+        });
+        root.addView(Ui.primary(activity, "Next: check what will be sent →", v -> {
+            step = 3;
+            render();
+        }));
+        root.addView(Ui.secondary(activity, "← Back", v -> {
+            step = 1;
+            render();
+        }));
+    }
+
+    private String locationLabel() {
+        switch (locationChoice) {
+            case SHARED: return String.format(java.util.Locale.US, "Approximate location ready (%.3f, %.3f)", location.lat, location.lng);
+            case PERMISSION_DENIED: return "Location permission was not given, so the request will be sent without location.";
+            case UNAVAILABLE: return wantLocation ? "Location isn't available right now, so the request will be sent without it." : "Location will not be shared.";
+            default: return "Location will not be shared.";
+        }
+    }
+
+    // ---------------------------------------------------------------- step 3: preview + confirm
+
+    private void stepPreview(LinearLayout root) {
+        root.addView(Ui.title(activity, "Step 4 of 4: Check and send"));
+        LinearLayout card = Ui.vcard(activity);
+        card.addView(Ui.text(activity, "To: " + recipient.displayName + " (in Saathi Personal)", 14f, Ui.INK, true));
+        card.addView(Ui.body(activity, "What happened: " + reasonLabel(reason)));
+        String n = note.trim();
+        card.addView(Ui.body(activity, "Your words: " + (n.isEmpty() ? "(none)" : "\"" + n + "\"")));
+        card.addView(Ui.body(activity, "Location: " + (locationChoice == HelpRequest.LocationChoice.SHARED ? "approximate area" : "not shared")));
+        String name = svc.repo.getChildDisplayName();
+        card.addView(Ui.body(activity, "From: " + (name.isEmpty() ? "your name in the family" : name)));
+        root.addView(card);
+        root.addView(Ui.note(activity, "Only the lines above are sent. Your checks, messages, contacts and lessons are not sent."));
+        root.addView(Ui.primary(activity, "Confirm and send", v -> confirmAndSend()));
+        root.addView(Ui.secondary(activity, "← Change something", v -> {
+            step = 2;
+            render();
+        }));
+        root.addView(Ui.secondary(activity, "Cancel — don't send", v -> host.dismissOverlay()));
+    }
+
+    private void confirmAndSend() {
+        if (busy) return; // repeated taps
+        busy = true;
+        current = HelpRequestService.confirmDraft(recipient.uid, recipient.displayName, reason, note,
+                locationChoice, location, System.currentTimeMillis()).with(HelpRequestStatus.SENDING, null, null, System.currentTimeMillis());
+        svc.repo.saveHelpRequest(current);
+        step = 4;
+        render();
+        send(current);
+    }
+
+    private void send(HelpRequest r) {
+        busy = true;
+        worker.execute(() -> {
+            HelpRequest res = svc.help.submit(r);
+            activity.runOnUiThread(() -> {
+                busy = false;
+                current = res;
+                svc.repo.saveHelpRequest(res);
+                if (step == 4) render();
+            });
+        });
+    }
+
+    // ---------------------------------------------------------------- step 4: result
+
+    private void stepResult(LinearLayout root) {
+        HelpRequest r = current;
+        if (r == null) {
+            host.dismissOverlay();
+            return;
+        }
+        HelpRequestStatus s = r.status;
+        int fg = s == HelpRequestStatus.ACKNOWLEDGED ? Ui.GREEN : (s == HelpRequestStatus.FAILED ? Ui.RED : Ui.AMBER);
+        root.addView(Ui.badge(activity, s.childLabel(), fg, Color.parseColor("#F3F3F0")));
+        if (s == HelpRequestStatus.SENDING) {
+            root.addView(Ui.body(activity, "Sending your request to " + r.recipientName + "…"));
+            root.addView(new ProgressBar(activity));
+            return;
+        }
+        if (r.failureReason != null) root.addView(Ui.body(activity, r.failureReason));
+        switch (s) {
+            case ACCEPTED_BY_SERVER:
+            case NOTIFICATION_QUEUED:
+                root.addView(Ui.body(activity, "Saathi will show here when " + r.recipientName + " opens it and presses \"I've seen this\". "
+                        + "Until then, we don't know if they have seen it — if you need help now, tell someone nearby or call."));
+                break;
+            case ACKNOWLEDGED:
+                root.addView(Ui.body(activity, r.recipientName + " has seen your request in Saathi Personal."));
+                break;
+            case DELIVERY_UNKNOWN:
+                root.addView(Ui.body(activity, "Tap \"Check status\" to ask the server, or send again — sending again won't create a second request."));
+                break;
+            case FAILED:
+                root.addView(Ui.body(activity, "Your request was not sent. Please use one of the other ways below."));
+                break;
+            default:
+                break;
+        }
+        if (s != HelpRequestStatus.FAILED && s != HelpRequestStatus.CANCELLED) {
+            root.addView(Ui.secondary(activity, "Check status", v -> refresh(r)));
+        }
+        if (s == HelpRequestStatus.FAILED || s == HelpRequestStatus.DELIVERY_UNKNOWN) {
+            root.addView(Ui.primary(activity, "Send again", v -> {
+                current = r.with(HelpRequestStatus.SENDING, null, null, System.currentTimeMillis());
+                svc.repo.saveHelpRequest(current);
+                render();
+                send(current);
+            }));
+        }
+        if (s == HelpRequestStatus.ACCEPTED_BY_SERVER || s == HelpRequestStatus.NOTIFICATION_QUEUED || s == HelpRequestStatus.DELIVERY_UNKNOWN) {
+            root.addView(Ui.secondary(activity, "Cancel this request", v -> {
+                busy = true;
+                worker.execute(() -> {
+                    HelpRequest c = svc.help.cancel(r);
+                    activity.runOnUiThread(() -> {
+                        busy = false;
+                        current = c;
+                        svc.repo.saveHelpRequest(c);
+                        if (c.status != HelpRequestStatus.CANCELLED) {
+                            Toast.makeText(activity, "Couldn't cancel right now", Toast.LENGTH_SHORT).show();
+                        }
+                        render();
+                    });
+                });
+            }));
+        }
+        if (s != HelpRequestStatus.ACKNOWLEDGED) addOtherWays(root);
+        root.addView(Ui.primary(activity, "Done", v -> host.dismissOverlay()));
+    }
+
+    private void refresh(HelpRequest r) {
+        busy = true;
+        worker.execute(() -> {
+            HelpRequest u = svc.help.refresh(r);
+            activity.runOnUiThread(() -> {
+                busy = false;
+                current = u;
+                svc.repo.saveHelpRequest(u);
+                render();
+            });
+        });
+    }
+
+    private void addEarlierRequests(LinearLayout root) {
+        List<HelpRequest> list = svc.repo.getHelpRequests();
+        if (list.isEmpty()) return;
+        TextView t = Ui.text(activity, "Earlier requests", 13f, Ui.INK, true);
+        t.setPadding(0, dp(20), 0, dp(4));
+        root.addView(t);
+        DateFormat df = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT);
+        int n = 0;
+        for (HelpRequest r : list) {
+            if (n++ == 5) break;
+            Button b = Ui.secondary(activity, df.format(new Date(r.createdAt)) + " → " + r.recipientName + "\n" + r.status.childLabel(), v -> {
+                current = r;
+                step = 4;
+                render();
+            });
+            b.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+            b.setTextSize(12f);
+            root.addView(b);
+        }
+    }
+
+    private static String reasonLabel(String key) {
+        for (String[] r : REASONS) if (r[0].equals(key)) return r[1];
+        return key;
+    }
+
+    public void release() {
+        worker.shutdown();
     }
 }

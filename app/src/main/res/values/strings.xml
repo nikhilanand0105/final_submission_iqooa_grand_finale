@@ -1,51 +1,9 @@
 <resources>
     <string name="app_name">Saathi Kids</string>
-    <string name="tagline">Your Digital Safety Companion</string>
-    <string name="core_promise">Check something. Understand it. Know what to do next.</string>
-    
-    <!-- Navigation Tabs (4 Destinations) -->
+
+    <!-- Bottom navigation (activity_main.xml). Screen text is built in code. -->
     <string name="nav_home">Home</string>
     <string name="nav_check">Check</string>
     <string name="nav_learn">Learn</string>
     <string name="nav_settings">Settings</string>
-
-    <!-- Home Actions -->
-    <string name="home_welcome_title">Hi there! 👋</string>
-    <string name="home_welcome_subtitle">Let\'s figure out anything online that feels confusing.</string>
-    <string name="home_check_primary">Check Something</string>
-    <string name="home_check_primary_desc">Paste a message, check a link, or review a file before opening it.</string>
-    <string name="home_sos_title">I Need Help</string>
-    <string name="home_sos_desc">Talk to someone you trust if you feel uncomfortable or unsafe.</string>
-    <string name="home_quick_message">Message</string>
-    <string name="home_quick_link">Link</string>
-    <string name="home_quick_file">File</string>
-    <string name="home_quick_learn">Lessons</string>
-
-    <!-- Check Modes -->
-    <string name="check_tab_message">Message</string>
-    <string name="check_tab_link">Website Link</string>
-    <string name="check_tab_file">File / App</string>
-
-    <!-- Standard Verdicts (Child-Friendly) -->
-    <string name="verdict_looks_okay">Looks okay from what I can see</string>
-    <string name="verdict_be_careful">Let\'s be careful</string>
-    <string name="verdict_warning_signs">There are warning signs</string>
-    <string name="verdict_cannot_tell">I can\'t tell from this alone</string>
-
-    <!-- SOS / Ask for Help -->
-    <string name="sos_header">Ask for Help</string>
-    <string name="sos_subtitle">You are never in trouble for asking for help.</string>
-    <string name="sos_step1_title">1. What happened?</string>
-    <string name="sos_step2_title">2. Choose who to contact</string>
-    <string name="sos_step3_title">3. Preview message</string>
-    <string name="sos_confirm_button">Send Help Request</string>
-    <string name="sos_demo_notice">This was a demo request. No one was contacted.</string>
-
-    <!-- Settings -->
-    <string name="settings_title">Settings &amp; Safety</string>
-    <string name="settings_privacy_title">Your Privacy &amp; Data</string>
-    <string name="settings_family_title">Family Connection</string>
-    <string name="settings_trusted_title">Trusted Adults</string>
-    <string name="settings_language_title">Language / भाषा</string>
-    <string name="settings_accessibility_title">Readability &amp; Display</string>
 </resources>

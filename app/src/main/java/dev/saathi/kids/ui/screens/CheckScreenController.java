@@ -1,40 +1,57 @@
 package dev.saathi.kids.ui.screens;
 
 import android.app.Activity;
-import android.content.Intent;
+import android.app.AlertDialog;
+import android.database.Cursor;
 import android.graphics.Color;
 import android.graphics.Typeface;
-import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
-import android.text.Editable;
-import android.text.TextWatcher;
+import android.provider.OpenableColumns;
+import android.text.InputFilter;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
+import android.widget.CompoundButton;
 import android.widget.EditText;
-import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
+import android.widget.Switch;
 import android.widget.TextView;
 
-import dev.saathi.kids.ui.model.CheckResult;
+import dev.saathi.ai.explain.ExplanationService;
+import dev.saathi.ai.explain.Finding;
+import dev.saathi.ai.explain.FindingSet;
+import dev.saathi.ai.explain.ModelState;
+import dev.saathi.ai.explain.SafetyExplanation;
+import dev.saathi.kids.KidsServices;
+import dev.saathi.kids.storage.model.CheckHistoryRecord;
+import dev.saathi.kids.ui.Ui;
 import dev.saathi.kids.ui.model.CheckVerdict;
-import dev.saathi.kids.ui.state.KidsAppState;
-import dev.saathi.sense.HinglishContextEvaluator;
-import dev.saathi.shield.network.PhishingUrlScanner;
+import dev.saathi.sense.analyzer.MessageAnalysisResult;
+import dev.saathi.sense.analyzer.SafetyIndicator;
+import dev.saathi.shield.apk.AnalysisStatus;
+import dev.saathi.shield.apk.ApkAnalysisResult;
+import dev.saathi.shield.apk.ApkIndicator;
+import dev.saathi.shield.apk.SigningInfo;
+import dev.saathi.shield.url.ParsedUrl;
+import dev.saathi.shield.url.ReputationStatus;
+import dev.saathi.shield.url.UrlAnalysisResult;
+import dev.saathi.shield.url.UrlStructuralIndicator;
+import dev.saathi.util.CancellationToken;
 
+import java.io.InputStream;
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
+import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
- * Saathi Kids Check Screen.
- * 3-Tab interactive safety verification engine for:
- * 1. Messages & Chats (scams, bullying, secrecy pressure, OTP theft)
- * 2. Links & URLs (suspicious domains, phishing, fake prize pages)
- * 3. Downloaded Files & APKs (unknown packages, third-party download risks)
+ * Check screen: Message / Link / File. Every result shown here is produced by running the real analyzer on the
+ * exact input the child entered or selected. Nothing is checked until the child taps a Check/Choose button.
  */
 public class CheckScreenController {
 
@@ -43,738 +60,713 @@ public class CheckScreenController {
         void requestFilePick();
     }
 
+    public static final int MODE_MESSAGE = 0, MODE_LINK = 1, MODE_FILE = 2;
+    private static final int MAX_MESSAGE_CHARS = 5000;
+
     private final Activity activity;
     private final CheckNavigationHost host;
-    private final float density;
+    private final KidsServices svc;
+    private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final ExecutorService aiWorker = Executors.newSingleThreadExecutor();
 
-    private ScrollView rootView;
-    private LinearLayout containerContent;
+    private ScrollView root;
+    private LinearLayout content;
+    private TextView tabMessage, tabLink, tabFile;
+    private LinearLayout inputCard;
+    private LinearLayout resultBox;
+    private EditText input;
+    private int mode = MODE_MESSAGE;
+    private int generation = 0;              // ignores results from superseded checks
+    private CancellationToken fileToken;
+    private CancellationToken aiToken;
+    private Uri pendingFileUri;              // file shared/opened into the app, waiting for the child to tap Check
 
-    // Mode: 0 = Message, 1 = Link, 2 = File
-    private int currentMode = 0;
-
-    // Views for Mode Switching
-    private TextView tabMessage;
-    private TextView tabLink;
-    private TextView tabFile;
-
-    // Input fields
-    private EditText etInput;
-    private LinearLayout containerScenarios;
-    private LinearLayout containerResult;
-
-    // Last evaluated result
-    private CheckResult lastResult;
+    // last result, for the explanation card
+    private FindingSet lastFindings;
+    private String lastSubmittedText;
+    private boolean lastThreatMatch;
 
     public CheckScreenController(Activity activity, CheckNavigationHost host) {
         this.activity = activity;
         this.host = host;
-        this.density = activity.getResources().getDisplayMetrics().density;
-        createView();
+        this.svc = KidsServices.get(activity);
+        build();
     }
 
     public View getView() {
-        return rootView;
+        return root;
     }
 
-    public void setMode(int mode) {
-        if (mode >= 0 && mode <= 2) {
-            this.currentMode = mode;
-            updateModeTabs();
-            resetInputs();
+    private int dp(int v) {
+        return Ui.dp(activity, v);
+    }
+
+    // ---------------------------------------------------------------------------------------- layout
+
+    private void build() {
+        root = new ScrollView(activity);
+        root.setFillViewport(true);
+        root.setBackgroundColor(Ui.BG);
+        content = new LinearLayout(activity);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(20), dp(20), dp(20), dp(60));
+        root.addView(content);
+
+        TextView h = Ui.text(activity, "Safety Check 🔍", 24f, Ui.INK, true);
+        h.setTypeface(Typeface.create("sans-serif-black", Typeface.BOLD));
+        content.addView(h);
+        TextView sub = Ui.text(activity, "Paste a message or a link, or choose a downloaded file. Saathi looks for warning signs and explains what to do next.", 13.5f, Color.parseColor("#555555"), false);
+        sub.setPadding(0, dp(4), 0, dp(14));
+        content.addView(sub);
+
+        LinearLayout tabs = Ui.row(activity);
+        tabs.setBackground(Ui.card(activity, Color.parseColor("#ECECE8"), Color.parseColor("#E0E0DC"), 12));
+        tabs.setPadding(dp(4), dp(4), dp(4), dp(4));
+        tabMessage = tab("💬 Message", MODE_MESSAGE);
+        tabLink = tab("🔗 Link", MODE_LINK);
+        tabFile = tab("📁 File", MODE_FILE);
+        tabs.addView(tabMessage);
+        tabs.addView(tabLink);
+        tabs.addView(tabFile);
+        LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        tlp.bottomMargin = dp(14);
+        content.addView(tabs, tlp);
+
+        inputCard = Ui.vcard(activity);
+        content.addView(inputCard);
+        resultBox = new LinearLayout(activity);
+        resultBox.setOrientation(LinearLayout.VERTICAL);
+        content.addView(resultBox);
+        setMode(MODE_MESSAGE);
+    }
+
+    private TextView tab(String label, int m) {
+        TextView t = Ui.text(activity, label, 13f, Ui.MUTED, true);
+        t.setGravity(Gravity.CENTER);
+        t.setPadding(0, dp(10), 0, dp(10));
+        t.setLayoutParams(Ui.weight(1f));
+        t.setOnClickListener(v -> setMode(m));
+        return t;
+    }
+
+    public void setMode(int m) {
+        mode = m;
+        generation++;
+        cancelRunning();
+        for (TextView t : new TextView[]{tabMessage, tabLink, tabFile}) {
+            boolean on = (t == tabMessage && m == MODE_MESSAGE) || (t == tabLink && m == MODE_LINK) || (t == tabFile && m == MODE_FILE);
+            t.setBackground(on ? Ui.card(activity, Color.WHITE, Color.parseColor("#DCDCD8"), 8) : null);
+            t.setTextColor(on ? Ui.INK : Color.parseColor("#777777"));
         }
+        renderInput();
+        resultBox.removeAllViews();
     }
 
-    public void setPastedText(String text) {
-        setMode(0);
-        if (etInput != null) {
-            etInput.setText(text);
-            runCheck(text);
+    private void cancelRunning() {
+        if (fileToken != null) fileToken.cancel();
+        if (aiToken != null) aiToken.cancel();
+    }
+
+    private void renderInput() {
+        inputCard.removeAllViews();
+        input = null;
+        if (mode == MODE_FILE) {
+            renderFileInput();
+            return;
         }
-    }
-
-    public void setPastedUrl(String url) {
-        setMode(1);
-        if (etInput != null) {
-            etInput.setText(url);
-            runCheck(url);
+        input = new EditText(activity);
+        input.setTextSize(14f);
+        input.setTextColor(Ui.INK);
+        input.setHintTextColor(Color.parseColor("#999999"));
+        input.setGravity(Gravity.TOP | Gravity.START);
+        input.setBackground(Ui.card(activity, Color.parseColor("#F9F9F8"), Color.parseColor("#E4E4DF"), 10));
+        input.setPadding(dp(14), dp(12), dp(14), dp(12));
+        if (mode == MODE_MESSAGE) {
+            input.setHint("Paste a chat, game message or text here…");
+            input.setMinLines(4);
+            input.setFilters(new InputFilter[]{new InputFilter.LengthFilter(MAX_MESSAGE_CHARS)});
+        } else {
+            input.setHint("Paste a web link here, e.g. https://example.com");
+            input.setMinLines(2);
+            input.setFilters(new InputFilter[]{new InputFilter.LengthFilter(8192)});
+            input.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI
+                    | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE);
         }
-    }
-
-    public void setFileToCheck(String fileName) {
-        setMode(2);
-        if (etInput != null) {
-            etInput.setText(fileName);
-            runCheck(fileName);
+        inputCard.addView(input);
+        if (mode == MODE_MESSAGE) {
+            inputCard.addView(Ui.note(activity, "Checked on this phone; the text isn't uploaded. If a concern is found, a short quote is kept in Safety alerts for 30 days."));
+        } else {
+            addLinkPrivacyControls();
         }
+        LinearLayout btns = Ui.row(activity);
+        Button check = Ui.primary(activity, "Check now  →", v -> runTextCheck());
+        LinearLayout.LayoutParams c = Ui.weight(2f);
+        c.rightMargin = dp(8);
+        btns.addView(check, c);
+        Button clear = Ui.secondary(activity, "Clear", v -> {
+            if (input != null) input.setText("");
+            resultBox.removeAllViews();
+        });
+        btns.addView(clear, Ui.weight(1f));
+        inputCard.addView(btns);
     }
 
-    private void createView() {
-        rootView = new ScrollView(activity);
-        rootView.setLayoutParams(new ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-        ));
-        rootView.setFillViewport(true);
-        rootView.setBackgroundColor(Color.parseColor("#F7F7F5"));
-
-        containerContent = new LinearLayout(activity);
-        containerContent.setOrientation(LinearLayout.VERTICAL);
-        containerContent.setPadding(dp(20), dp(20), dp(20), dp(60));
-
-        // 1. Header
-        containerContent.addView(buildHeader());
-
-        // 2. Mode Selector (Message / Link / File)
-        containerContent.addView(buildModeSelector());
-
-        // 3. Main Input Card
-        containerContent.addView(buildInputCard());
-
-        // 4. Quick Scenario Chips (for quick testing)
-        containerScenarios = buildScenariosSection();
-        containerContent.addView(containerScenarios);
-
-        // 5. Result Container (initially hidden until checked)
-        containerResult = new LinearLayout(activity);
-        containerResult.setOrientation(LinearLayout.VERTICAL);
-        containerResult.setVisibility(View.GONE);
-        containerContent.addView(containerResult);
-
-        rootView.addView(containerContent);
-        updateModeTabs();
-    }
-
-    private View buildHeader() {
-        LinearLayout box = new LinearLayout(activity);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(0, dp(4), 0, dp(14));
-
-        TextView tvTitle = new TextView(activity);
-        tvTitle.setText("Safety Check 🔍");
-        tvTitle.setTextSize(24f);
-        tvTitle.setTypeface(Typeface.create("sans-serif-black", Typeface.BOLD));
-        tvTitle.setTextColor(Color.parseColor("#141414"));
-        box.addView(tvTitle);
-
-        TextView tvSub = new TextView(activity);
-        tvSub.setText("Paste a message, test a web link, or check a downloaded file. We'll help you spot warning signs.");
-        tvSub.setTextSize(13.5f);
-        tvSub.setTextColor(Color.parseColor("#555555"));
-        tvSub.setLineSpacing(dp(2), 1.15f);
-        LinearLayout.LayoutParams subLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        subLp.topMargin = dp(4);
-        box.addView(tvSub, subLp);
-
-        return box;
-    }
-
-    private View buildModeSelector() {
-        LinearLayout row = new LinearLayout(activity);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setBackground(createCardDrawable(Color.parseColor("#ECECE8"), Color.parseColor("#E0E0DC"), dp(12)));
-        row.setPadding(dp(4), dp(4), dp(4), dp(4));
-
-        LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        rowLp.bottomMargin = dp(16);
-        row.setLayoutParams(rowLp);
-
-        tabMessage = createTabButton("💬 Message", 0);
-        tabLink = createTabButton("🔗 Link", 1);
-        tabFile = createTabButton("📁 File", 2);
-
-        row.addView(tabMessage);
-        row.addView(tabLink);
-        row.addView(tabFile);
-
-        return row;
-    }
-
-    private TextView createTabButton(String title, int mode) {
-        TextView tab = new TextView(activity);
-        tab.setText(title);
-        tab.setTextSize(13f);
-        tab.setTypeface(Typeface.DEFAULT_BOLD);
-        tab.setGravity(Gravity.CENTER);
-        tab.setPadding(0, dp(10), 0, dp(10));
-
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
-        tab.setLayoutParams(lp);
-
-        tab.setOnClickListener(v -> setMode(mode));
-
-        return tab;
-    }
-
-    private void updateModeTabs() {
-        int activeBg = Color.WHITE;
-        int activeText = Color.parseColor("#141414");
-        int inactiveText = Color.parseColor("#777777");
-
-        tabMessage.setBackground(currentMode == 0 ? createCardDrawable(activeBg, Color.parseColor("#DCDCD8"), dp(8)) : null);
-        tabMessage.setTextColor(currentMode == 0 ? activeText : inactiveText);
-
-        tabLink.setBackground(currentMode == 1 ? createCardDrawable(activeBg, Color.parseColor("#DCDCD8"), dp(8)) : null);
-        tabLink.setTextColor(currentMode == 1 ? activeText : inactiveText);
-
-        tabFile.setBackground(currentMode == 2 ? createCardDrawable(activeBg, Color.parseColor("#DCDCD8"), dp(8)) : null);
-        tabFile.setTextColor(currentMode == 2 ? activeText : inactiveText);
-
-        if (etInput != null) {
-            if (currentMode == 0) {
-                etInput.setHint("Paste a suspicious chat, game message, or text here...");
-                etInput.setMinLines(3);
-            } else if (currentMode == 1) {
-                etInput.setHint("Paste a website link (e.g., https://game-rewards.top)...");
-                etInput.setMinLines(1);
-            } else {
-                etInput.setHint("File name or details (e.g., mod_game_v2.apk)...");
-                etInput.setMinLines(2);
+    private void addLinkPrivacyControls() {
+        inputCard.addView(Ui.note(activity, "Saathi never opens the link. It reads the address only."));
+        if (!svc.urlAnalyzer.getProvider().isConfigured()) {
+            inputCard.addView(Ui.note(activity, "The online safety list isn't set up in this version of the app, so only this phone's checks will run."));
+            return;
+        }
+        LinearLayout r = Ui.row(activity);
+        TextView label = Ui.text(activity, "Also ask the online safety list (" + svc.urlAnalyzer.getProvider().getName() + ")", 12.5f, Color.parseColor("#333333"), false);
+        r.addView(label, Ui.weight(1f));
+        Switch sw = new Switch(activity);
+        sw.setChecked(svc.repo.isOnlineLinkCheckAllowed());
+        sw.setOnCheckedChangeListener((CompoundButton b, boolean on) -> {
+            if (!on) {
+                svc.repo.setOnlineLinkCheckAllowed(false);
+                return;
             }
-        }
-
-        if (containerScenarios != null) {
-            containerScenarios.setVisibility(currentMode == 0 ? View.VISIBLE : View.GONE);
-        }
+            b.setChecked(false);
+            new AlertDialog.Builder(activity)
+                    .setTitle("Send link to the online safety list?")
+                    .setMessage(svc.urlAnalyzer.getProvider().getDisclosure() + "\n\nYou can turn this off any time.")
+                    .setPositiveButton("Yes, allow", (d, w) -> {
+                        svc.repo.setOnlineLinkCheckAllowed(true);
+                        b.setOnCheckedChangeListener(null);
+                        b.setChecked(true);
+                        renderInput();
+                    })
+                    .setNegativeButton("No, phone only", null)
+                    .show();
+        });
+        r.addView(sw);
+        inputCard.addView(r);
     }
 
-    private View buildInputCard() {
-        LinearLayout card = new LinearLayout(activity);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setBackground(createCardDrawable(Color.WHITE, Color.parseColor("#E6E6E2"), dp(16)));
-        card.setPadding(dp(18), dp(18), dp(18), dp(18));
+    private void renderFileInput() {
+        inputCard.addView(Ui.title(activity, "Check a downloaded app file (.apk)"));
+        inputCard.addView(Ui.body(activity, "Choose the file yourself. Saathi reads it to look for warning signs. It never installs or opens the app."));
+        if (pendingFileUri != null) {
+            String name = queryName(pendingFileUri);
+            inputCard.addView(Ui.badge(activity, "Shared with Saathi: " + name, Ui.INK, Color.parseColor("#ECECE8")));
+            Uri u = pendingFileUri;
+            inputCard.addView(Ui.primary(activity, "Check this file  →", v -> {
+                pendingFileUri = null;
+                checkFileUri(u);
+            }));
+        }
+        inputCard.addView(Ui.secondary(activity, "📁  Choose a file from this phone", v -> {
+            if (host != null) host.requestFilePick();
+        }));
+        inputCard.addView(Ui.note(activity, "Files up to " + Ui.formatSize(dev.saathi.shield.apk.DefaultApkStaticAnalyzer.MAX_FILE_BYTES)
+                + " can be checked. A temporary copy is made in Saathi's private storage and deleted afterwards."));
+    }
 
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.bottomMargin = dp(16);
-        card.setLayoutParams(lp);
+    // ---------------------------------------------------------------------------------------- entry points from MainActivity
 
-        etInput = new EditText(activity);
-        etInput.setHint("Paste a message, game chat, or text here...");
-        etInput.setTextSize(14f);
-        etInput.setTextColor(Color.parseColor("#141414"));
-        etInput.setHintTextColor(Color.parseColor("#999999"));
-        etInput.setGravity(Gravity.TOP | Gravity.START);
-        etInput.setBackground(createCardDrawable(Color.parseColor("#F9F9F8"), Color.parseColor("#E4E4DF"), dp(10)));
-        etInput.setPadding(dp(14), dp(12), dp(14), dp(12));
-        etInput.setMinLines(3);
-        card.addView(etInput);
+    /** Text shared from another app. Filled in, not checked, until the child taps Check. */
+    public void prefillSharedText(String text) {
+        String t = text.trim();
+        boolean looksLikeLink = !t.contains(" ") && !t.contains("\n") && (t.startsWith("http://") || t.startsWith("https://") || t.startsWith("www."));
+        setMode(looksLikeLink ? MODE_LINK : MODE_MESSAGE);
+        if (input != null) input.setText(t.length() > MAX_MESSAGE_CHARS ? t.substring(0, MAX_MESSAGE_CHARS) : t);
+        resultBox.removeAllViews();
+        LinearLayout c = Ui.vcard(activity);
+        c.addView(Ui.body(activity, "Shared from another app. Look it over, then tap Check now."));
+        resultBox.addView(c);
+    }
 
-        // Buttons row
-        LinearLayout btnRow = new LinearLayout(activity);
-        btnRow.setOrientation(LinearLayout.HORIZONTAL);
-        btnRow.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout.LayoutParams btnRowLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        btnRowLp.topMargin = dp(12);
+    /** A file shared/opened into the app. Shown, not checked, until the child taps "Check this file". */
+    public void offerSharedFile(Uri uri) {
+        pendingFileUri = uri;
+        setMode(MODE_FILE);
+    }
 
-        Button btnCheck = new Button(activity);
-        btnCheck.setText("Check Now  →");
-        btnCheck.setTextColor(Color.WHITE);
-        btnCheck.setTextSize(13.5f);
-        btnCheck.setTypeface(Typeface.DEFAULT_BOLD);
-        btnCheck.setBackground(createSolidDrawable(Color.parseColor("#141414"), dp(10)));
-        LinearLayout.LayoutParams checkLp = new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 2.0f);
-        checkLp.rightMargin = dp(8);
-        btnCheck.setLayoutParams(checkLp);
-        btnCheck.setOnClickListener(v -> {
-            String text = etInput.getText() != null ? etInput.getText().toString().trim() : "";
-            if (!text.isEmpty()) {
-                runCheck(text);
+    public void onFilePickCancelled() {
+        resultBox.removeAllViews();
+        LinearLayout c = Ui.vcard(activity);
+        c.addView(Ui.body(activity, "No file was chosen. Tap \"Choose a file\" to try again."));
+        resultBox.addView(c);
+    }
+
+    // ---------------------------------------------------------------------------------------- message & link
+
+    private void runTextCheck() {
+        if (input == null) return;
+        String text = input.getText() == null ? "" : input.getText().toString();
+        if (text.trim().isEmpty()) {
+            showError(mode == MODE_LINK ? "Paste a link first." : "Paste a message first.");
+            return;
+        }
+        final int gen = ++generation;
+        final int m = mode;
+        final boolean live = m == MODE_LINK && svc.repo.isOnlineLinkCheckAllowed();
+        showProgress(m == MODE_LINK ? (live ? "Checking the address and asking the online safety list…" : "Checking the address…") : "Checking the message…", null);
+        worker.execute(() -> {
+            try {
+                if (m == MODE_MESSAGE) {
+                    MessageAnalysisResult r = svc.messageAnalyzer.analyze(text);
+                    // Same Gemma-first pipeline as background notifications; updates the safety flags.
+                    dev.saathi.kids.safety.SafetyEventProcessor.Outcome so = dev.saathi.kids.safety.SafetyEventProcessor.get(activity)
+                            .analyzeNow(dev.saathi.safety.SafetyTypes.SourceType.MANUAL_MESSAGE, "", text, false);
+                    activity.runOnUiThread(() -> { if (gen == generation) { showMessageResult(r, text); addSafetyClassification(so); } });
+                } else {
+                    UrlAnalysisResult r = svc.urlAnalyzer.analyze(text, live);
+                    activity.runOnUiThread(() -> { if (gen == generation) showUrlResult(r); });
+                }
+            } catch (RuntimeException e) {
+                activity.runOnUiThread(() -> { if (gen == generation) showError("The check couldn't be completed. Nothing was found either way."); });
             }
         });
-        btnRow.addView(btnCheck);
+    }
 
-        Button btnClear = new Button(activity);
-        btnClear.setText("Clear");
-        btnClear.setTextColor(Color.parseColor("#555555"));
-        btnClear.setTextSize(13f);
-        btnClear.setTypeface(Typeface.DEFAULT_BOLD);
-        btnClear.setBackground(createCardDrawable(Color.parseColor("#F0F0EE"), Color.parseColor("#DCDCD8"), dp(10)));
-        LinearLayout.LayoutParams clearLp = new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
-        btnClear.setLayoutParams(clearLp);
-        btnClear.setOnClickListener(v -> resetInputs());
-        btnRow.addView(btnClear);
-
-        card.addView(btnRow, btnRowLp);
-
-        // File pick button for File mode
-        if (currentMode == 2) {
-            Button btnPickFile = new Button(activity);
-            btnPickFile.setText("📁  Pick a Downloaded File from Phone");
-            btnPickFile.setTextColor(Color.parseColor("#141414"));
-            btnPickFile.setTextSize(13f);
-            btnPickFile.setTypeface(Typeface.DEFAULT_BOLD);
-            btnPickFile.setBackground(createCardDrawable(Color.parseColor("#F5F5F3"), Color.parseColor("#DCDCD8"), dp(10)));
-            LinearLayout.LayoutParams pickLp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            pickLp.topMargin = dp(8);
-            btnPickFile.setLayoutParams(pickLp);
-            btnPickFile.setOnClickListener(v -> {
-                if (host != null) host.requestFilePick();
-            });
-            card.addView(btnPickFile);
+    private void showMessageResult(MessageAnalysisResult r, String text) {
+        CheckVerdict v;
+        switch (r.getVerdict()) {
+            case WARNING_SIGNS_DETECTED: v = CheckVerdict.WARNING_SIGNS; break;
+            case BE_CAREFUL: v = CheckVerdict.BE_CAREFUL; break;
+            case NO_FLAGS_DETECTED: v = CheckVerdict.LOOKS_OKAY; break;
+            default: v = CheckVerdict.CANNOT_TELL; break;
         }
+        List<String[]> signs = new ArrayList<>();
+        for (SafetyIndicator i : r.getMatchedIndicators()) signs.add(new String[]{i.getName(), i.getDescription(), i.getEvidenceExcerpt()});
+        LinearLayout card = resultCard(v, v.getLabel(), r.getExplanation(), signs, r.getWhyItMatters(), r.getNextSteps());
+        card.addView(Ui.note(activity, "ℹ️ " + r.getLimitationsNote() + " • " + r.getAnalyzerType() + " " + r.getAnalyzerVersion()));
+        finishResult(card, FindingSet.fromMessage(r), text, false);
+        record("MESSAGE", r.getAnalyzerType() + "_" + r.getAnalyzerVersion(), r.getVerdict().name(), r.getMatchedIndicators().size(), idsOfMessage(r));
+    }
 
+    /** Adds the pipeline's threat / self-harm classification (with its true source) to the current result card. */
+    private void addSafetyClassification(dev.saathi.kids.safety.SafetyEventProcessor.Outcome o) {
+        if (resultBox.getChildCount() == 0) return;
+        LinearLayout card = (LinearLayout) resultBox.getChildAt(0);
+        dev.saathi.safety.SafetyClassification c = o.result.classification;
+        LinearLayout box = new LinearLayout(activity);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(0, dp(10), 0, 0);
+        boolean selfHarm = c.selfHarm.isPersonalRisk();
+        boolean threat = c.threat != dev.saathi.safety.SafetyTypes.ThreatKind.NONE;
+        if (selfHarm) {
+            box.addView(Ui.text(activity, "💚 This sounds really hard", 13.5f, Ui.GREEN, true));
+            box.addView(Ui.body(activity, "If this is about you or a friend, you don't have to handle it alone. Talking to someone can help."));
+            box.addView(Ui.secondary(activity, "📞 " + dev.saathi.kids.safety.SupportResources.TELE_MANAS_LABEL,
+                    v -> activity.startActivity(new android.content.Intent(android.content.Intent.ACTION_DIAL,
+                            Uri.parse("tel:" + dev.saathi.kids.safety.SupportResources.TELE_MANAS_NUMBER)))));
+        } else if (threat) {
+            box.addView(Ui.text(activity, "⚠️ Threat check: " + c.threat.name().toLowerCase(Locale.ROOT).replace('_', ' '), 13.5f, Ui.RED, true));
+            box.addView(Ui.body(activity, c.explanation));
+        } else {
+            box.addView(Ui.text(activity, "Threat and self-harm check: nothing found", 12.5f, Ui.MUTED, true));
+        }
+        for (String n : c.guardNotes) box.addView(Ui.note(activity, n));
+        box.addView(Ui.note(activity, "Checked by: " + c.source.label()
+                + (o.result.modelNote.isEmpty() ? "" : " (" + o.result.modelNote + ")")
+                + (c.status == dev.saathi.safety.SafetyTypes.Status.NEEDS_REVIEW ? " • not sure — worth asking an adult" : "")
+                + (o.decision.event != null ? " • saved to Safety alerts" : "")));
+        card.addView(box, Math.max(0, card.getChildCount() - 2));
+    }
+
+    private void showUrlResult(UrlAnalysisResult r) {
+        CheckVerdict v;
+        switch (r.getVerdict()) {
+            case WARNING_SIGNS: v = CheckVerdict.WARNING_SIGNS; break;
+            case BE_CAREFUL: v = CheckVerdict.BE_CAREFUL; break;
+            case NO_WARNING_SIGNS_FOUND: v = CheckVerdict.LOOKS_OKAY; break;
+            default: v = CheckVerdict.CANNOT_TELL; break;
+        }
+        List<String[]> signs = new ArrayList<>();
+        for (UrlStructuralIndicator i : r.getLocalIndicators()) signs.add(new String[]{i.getName(), i.getDescription(), i.getEvidenceExcerpt()});
+        LinearLayout card = resultCard(v, r.getVerdict().getLabel(), r.getSummary(), signs, r.getWhyItMatters(), r.getNextSteps());
+
+        dev.saathi.shield.url.DomainTrust trust = dev.saathi.shield.url.DomainTrust.evaluate(r, dev.saathi.shield.url.OfficialDomainRegistry.bundled());
+        TextView tr = Ui.text(activity, trustLabel(trust), 12.5f,
+                trust.outcome == dev.saathi.shield.url.DomainTrust.Outcome.RECOGNISED_OFFICIAL || trust.outcome == dev.saathi.shield.url.DomainTrust.Outcome.OFFICIALLY_LINKED_LEGACY ? Ui.GREEN
+                        : trust.outcome == dev.saathi.shield.url.DomainTrust.Outcome.UNKNOWN ? Ui.MUTED : Ui.RED, true);
+        tr.setPadding(0, dp(10), 0, 0);
+        card.addView(tr);
+        card.addView(Ui.note(activity, trust.reason));
+
+        // Online reputation is shown separately from the on-phone findings.
+        TextView online = Ui.text(activity, "Online safety list: " + r.getStatus().getTitle(), 12.5f, Ui.INK, true);
+        online.setPadding(0, dp(10), 0, 0);
+        card.addView(online);
+        card.addView(Ui.body(activity, r.getLiveCheckNote()));
+        card.addView(Ui.note(activity, "ℹ️ " + r.getLimitations()));
+
+        ParsedUrl p = r.getParsedUrl();
+        if (p.isValid()) {
+            StringBuilder d = new StringBuilder();
+            d.append("Website: ").append(p.getDisplayHost());
+            if (!p.getUnicodeHost().equals(p.getAsciiHost())) d.append("\nPunycode form: ").append(p.getAsciiHost());
+            d.append("\nScheme: ").append(p.getScheme()).append(p.isSchemeExplicit() ? "" : " (assumed)");
+            if (p.getPort() > 0) d.append("\nPort: ").append(p.getPort());
+            d.append("\nPath: ").append(clip(p.getPath(), 120));
+            if (!p.getQuery().isEmpty()) d.append("\nQuery: ").append(p.getQuery().length()).append(" characters (not shown, may contain private data)");
+            addDetails(card, "Address parts", d.toString());
+        }
+        finishResult(card, FindingSet.fromUrl(r), null, r.getStatus() == ReputationStatus.THREAT_MATCH);
+        List<String> ids = new ArrayList<>();
+        for (UrlStructuralIndicator i : r.getLocalIndicators()) ids.add(i.getId());
+        record("LINK", "url-heuristics+" + r.getStatus().name(), r.getVerdict().name(), r.getLocalIndicators().size(), ids);
+    }
+
+    private static String trustLabel(dev.saathi.shield.url.DomainTrust t) {
+        switch (t.outcome) {
+            case RECOGNISED_OFFICIAL: return "Recognised official domain" + (t.organisation != null ? " (" + t.organisation + ")" : "");
+            case OFFICIALLY_LINKED_LEGACY: return "Officially linked legacy domain" + (t.organisation != null ? " (" + t.organisation + ")" : "");
+            case SUSPECTED_SPOOF: return "Suspected fake site" + (t.organisation != null ? " pretending to be " + t.organisation : "");
+            case KNOWN_HARMFUL: return "Known harmful site";
+            case UNAVAILABLE: return "Site check unavailable";
+            default: return "Unknown site";
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------- file
+
+    public void checkFileUri(Uri uri) {
+        if (uri == null) return;
+        if (mode != MODE_FILE) setMode(MODE_FILE);
+        cancelRunning();
+        final int gen = ++generation;
+        final CancellationToken token = new CancellationToken();
+        fileToken = token;
+        String name = queryName(uri);
+        long size = querySize(uri);
+        final ProgressBar[] bar = new ProgressBar[1];
+        final TextView[] stageView = new TextView[1];
+        showProgress("Checking " + name + (size >= 0 ? " (" + Ui.formatSize(size) + ")" : ""), token);
+        bar[0] = (ProgressBar) resultBox.findViewWithTag("bar");
+        stageView[0] = (TextView) resultBox.findViewWithTag("stage");
+        worker.execute(() -> {
+            ApkAnalysisResult r;
+            try (InputStream in = activity.getContentResolver().openInputStream(uri)) {
+                if (in == null) throw new java.io.FileNotFoundException();
+                r = svc.apkAnalyzer.analyze(in, name, size, activity.getCacheDir(), token, (stage, done, total) ->
+                        activity.runOnUiThread(() -> {
+                            if (gen != generation) return;
+                            if (stageView[0] != null) stageView[0].setText(stage + (total > 0 && stage.startsWith("Reading")
+                                    ? " — " + Ui.formatSize(done) + " of " + Ui.formatSize(total) : ""));
+                            if (bar[0] != null) {
+                                if (total > 0) {
+                                    bar[0].setIndeterminate(false);
+                                    bar[0].setMax(1000);
+                                    bar[0].setProgress((int) Math.min(1000, done * 1000 / Math.max(1, total)));
+                                } else {
+                                    bar[0].setIndeterminate(true);
+                                }
+                            }
+                        }));
+            } catch (SecurityException e) {
+                r = null;
+                activity.runOnUiThread(() -> { if (gen == generation) showError("Android didn't allow Saathi to read that file. Try choosing it again with the file picker."); });
+                return;
+            } catch (java.io.FileNotFoundException e) {
+                activity.runOnUiThread(() -> { if (gen == generation) showError("That file couldn't be found. It may have been moved or deleted."); });
+                return;
+            } catch (Exception e) {
+                activity.runOnUiThread(() -> { if (gen == generation) showError("The file couldn't be read."); });
+                return;
+            }
+            final ApkAnalysisResult res = r;
+            activity.runOnUiThread(() -> { if (gen == generation) showApkResult(res); });
+        });
+    }
+
+    private void showApkResult(ApkAnalysisResult r) {
+        CheckVerdict v;
+        switch (r.verdict) {
+            case KNOWN_THREAT_MATCH: v = CheckVerdict.WARNING_SIGNS; break;
+            case STATIC_INDICATORS_FOUND:
+                v = r.highestSeverity().getWeight() >= dev.saathi.model.ThreatSeverity.HIGH.getWeight() ? CheckVerdict.WARNING_SIGNS : CheckVerdict.BE_CAREFUL;
+                break;
+            case NO_SUSPICIOUS_STATIC_INDICATORS: v = CheckVerdict.LOOKS_OKAY; break;
+            default: v = CheckVerdict.CANNOT_TELL; break;
+        }
+        List<String[]> signs = new ArrayList<>();
+        for (ApkIndicator i : r.indicators) {
+            if (i.severity == dev.saathi.model.ThreatSeverity.INFO) continue;
+            signs.add(new String[]{i.title, i.explanation, i.evidence});
+        }
+        LinearLayout card = resultCard(v, r.verdict.getLabel(), r.summary, signs, r.whyItMatters, r.nextSteps);
+        card.addView(Ui.note(activity, "File: " + r.fileName + " • " + Ui.formatSize(r.sizeBytes)));
+        card.addView(Ui.note(activity, "ℹ️ " + r.limitations));
+        if (r.status != AnalysisStatus.CANCELLED) addDetails(card, "Technical details (for an adult)", technical(r));
+        finishResult(card, FindingSet.fromApk(r), null, false);
+        List<String> ids = new ArrayList<>();
+        for (ApkIndicator i : r.indicators) ids.add(i.id);
+        record("FILE", r.analyzerVersion + "+" + r.status.name(), r.verdict.name(), signs.size(), ids);
+    }
+
+    private String technical(ApkAnalysisResult r) {
+        StringBuilder b = new StringBuilder();
+        b.append("Status: ").append(r.status.getDescription());
+        if (r.sha256 != null) b.append("\nSHA-256: ").append(r.sha256);
+        if (r.manifest != null) {
+            b.append("\nPackage: ").append(r.manifest.packageName);
+            b.append("\nVersion: ").append(r.manifest.versionName != null ? r.manifest.versionName : "not stated")
+                    .append(r.manifest.versionCode != null ? " (code " + r.manifest.versionCode + ")" : "");
+            b.append("\nMin / target Android SDK: ").append(r.manifest.minSdk != null ? r.manifest.minSdk : "not stated")
+                    .append(" / ").append(r.manifest.targetSdk != null ? r.manifest.targetSdk : "not stated");
+            b.append("\nComponents: ").append(r.manifest.activities).append(" screens, ").append(r.manifest.services).append(" services, ")
+                    .append(r.manifest.receivers).append(" receivers, ").append(r.manifest.providers).append(" providers");
+            b.append("\nPermissions (").append(r.manifest.permissions.size()).append("):");
+            for (String p : r.manifest.permissions) b.append("\n  • ").append(p);
+        } else if (r.manifestError != null) {
+            b.append("\nManifest: ").append(r.manifestError);
+        }
+        if (r.signing != null) {
+            b.append("\nSigning schemes found: ").append(r.signing.schemes());
+            for (SigningInfo.Cert c : r.signing.certificates) {
+                b.append("\nCertificate: ").append(c.subject).append("\n  SHA-256: ").append(c.sha256)
+                        .append(c.androidDebug ? "\n  (Android debug key)" : "").append(c.expired ? "\n  (expired)" : "");
+            }
+        }
+        if (r.inventory != null) {
+            b.append("\nArchive: ").append(r.inventory.totalEntries).append(" entries, ").append(r.inventory.dexFiles).append(" code (DEX) files, ")
+                    .append(r.inventory.nativeLibs).append(" native libraries");
+            if (!r.inventory.abis.isEmpty()) b.append(" ").append(r.inventory.abis);
+        }
+        if (r.dex != null) {
+            b.append("\nCode: ").append(r.dex.classDefs).append(" classes, ").append(r.dex.strings).append(" strings inspected");
+            if (!r.dex.urls.isEmpty()) {
+                b.append("\nWeb addresses found in code (not opened):");
+                int n = 0;
+                for (String u : r.dex.urls) {
+                    if (n++ == 8) { b.append("\n  …"); break; }
+                    b.append("\n  • ").append(clip(u, 80));
+                }
+            }
+        }
+        b.append("\nThreat database: ").append(r.hashLookup == dev.saathi.shield.apk.FileHashReputationProvider.Outcome.NOT_CHECKED ? "not checked (not configured)" : r.hashLookup.name());
+        if (!r.notExtracted.isEmpty()) {
+            b.append("\nNot checked by this version:");
+            for (String s : r.notExtracted) b.append("\n  • ").append(s);
+        }
+        b.append("\nAnalyzer: ").append(r.analyzerVersion).append(" in ").append(r.durationMs).append(" ms");
+        return b.toString();
+    }
+
+    // ---------------------------------------------------------------------------------------- shared result UI
+
+    private LinearLayout resultCard(CheckVerdict v, String label, String summary, List<String[]> signs, String why, List<String> steps) {
+        resultBox.removeAllViews();
+        LinearLayout card = Ui.vcard(activity);
+        card.addView(Ui.badge(activity, v.getBadgeEmoji() + "  " + label, Color.parseColor(v.getTextColorHex()), Color.parseColor(v.getBgColorHex())));
+        TextView s = Ui.text(activity, summary, 15f, Ui.INK, true);
+        s.setPadding(0, 0, 0, dp(8));
+        card.addView(s);
+        if (!signs.isEmpty()) {
+            card.addView(Ui.text(activity, "Warning signs found:", 12.5f, Ui.AMBER, true));
+            for (String[] sg : signs) {
+                card.addView(Ui.text(activity, "•  " + sg[0], 13f, Color.parseColor("#222222"), true));
+                card.addView(Ui.body(activity, "   " + sg[1]));
+                if (sg[2] != null && !sg[2].isEmpty()) {
+                    TextView ev = Ui.text(activity, "   Seen: " + clip(sg[2], 140), 12f, Color.parseColor("#555555"), false);
+                    ev.setTypeface(Typeface.create("sans-serif-medium", Typeface.ITALIC));
+                    card.addView(ev);
+                }
+            }
+        }
+        if (why != null && !why.isEmpty()) {
+            TextView wt = Ui.text(activity, "Why this matters:", 12.5f, Ui.INK, true);
+            wt.setPadding(0, dp(10), 0, 0);
+            card.addView(wt);
+            card.addView(Ui.body(activity, why));
+        }
+        if (steps != null && !steps.isEmpty()) {
+            TextView st = Ui.text(activity, "What you can do now:", 12.5f, Ui.GREEN, true);
+            st.setPadding(0, dp(10), 0, 0);
+            card.addView(st);
+            for (String step : steps) card.addView(Ui.body(activity, "✔  " + step));
+        }
         return card;
     }
 
-    private LinearLayout buildScenariosSection() {
+    private void finishResult(LinearLayout card, FindingSet fs, String submitted, boolean threatMatch) {
+        lastFindings = fs;
+        lastSubmittedText = submitted;
+        lastThreatMatch = threatMatch;
+        card.addView(buildExplanationSection());
+        card.addView(Ui.danger(activity, "🚨  Ask a trusted adult for help", v -> { if (host != null) host.showSosFlow(); }));
+        resultBox.addView(card);
+        root.post(() -> root.smoothScrollTo(0, resultBox.getTop()));
+    }
+
+    private void addDetails(LinearLayout card, String title, String body) {
+        TextView toggle = Ui.text(activity, "▸ " + title, 12.5f, Ui.MUTED, true);
+        toggle.setPadding(0, dp(10), 0, dp(4));
+        TextView details = Ui.text(activity, body, 11.5f, Color.parseColor("#444444"), false);
+        details.setTypeface(Typeface.MONOSPACE);
+        details.setTextIsSelectable(true);
+        details.setVisibility(View.GONE);
+        toggle.setOnClickListener(v -> {
+            boolean show = details.getVisibility() != View.VISIBLE;
+            details.setVisibility(show ? View.VISIBLE : View.GONE);
+            toggle.setText((show ? "▾ " : "▸ ") + title);
+        });
+        card.addView(toggle);
+        card.addView(details);
+    }
+
+    // ---------------------------------------------------------------------------------------- explanation (model or rules)
+
+    private View buildExplanationSection() {
         LinearLayout box = new LinearLayout(activity);
         box.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.bottomMargin = dp(16);
+        box.setBackground(Ui.card(activity, Color.parseColor("#F9F8F6"), Color.parseColor("#E4DFD7"), 12));
+        box.setPadding(dp(14), dp(12), dp(14), dp(12));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = dp(12);
+        lp.bottomMargin = dp(6);
         box.setLayoutParams(lp);
 
-        TextView tvTitle = new TextView(activity);
-        tvTitle.setText("Or try a practice example 💡");
-        tvTitle.setTextSize(13f);
-        tvTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        tvTitle.setTextColor(Color.parseColor("#555555"));
-        box.addView(tvTitle);
+        box.addView(Ui.text(activity, "✨ Explain this to me", 13.5f, Ui.INK, true));
+        ModelState st = svc.model.getState();
+        String status = st == ModelState.READY ? "On-device AI model ready (" + svc.model.getModelId() + ")"
+                : st.getDescription() + (st == ModelState.UNAVAILABLE ? " — you'll get rules-based guidance" : "");
+        box.addView(Ui.note(activity, status));
 
-        HorizontalScrollView hScroll = new HorizontalScrollView(activity);
-        hScroll.setHorizontalScrollBarEnabled(false);
-        LinearLayout.LayoutParams hlp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        hlp.topMargin = dp(8);
-
-        LinearLayout chipsRow = new LinearLayout(activity);
-        chipsRow.setOrientation(LinearLayout.HORIZONTAL);
-
-        chipsRow.addView(createScenarioChip("🎁 Free Robux Scam",
-                "Claim 5000 free Robux right now before the event ends! Send your username and password to claim: http://robux-claim.top"));
-        chipsRow.addView(createScenarioChip("🔑 Secrecy & OTP Request",
-                "Mummy papa ko mat batana, send the 6-digit OTP code received on your phone to unlock secret VIP mode. Don't tell anyone."));
-        chipsRow.addView(createScenarioChip("⚡ Mean Message / Bully",
-                "You are the worst player ever, nobody in class likes you. Delete your account right now."));
-        chipsRow.addView(createScenarioChip("🤫 Move to Telegram & Photo",
-                "Telegram pe message kar aur apni photo bhej, secret between us, keep this secret from parents."));
-        chipsRow.addView(createScenarioChip("✅ Safe Homework Chat",
-                "Hey! Are you done with the science project homework? Let's review it tomorrow at school during study hour."));
-
-        hScroll.addView(chipsRow);
-        box.addView(hScroll, hlp);
-
+        TextView out = Ui.body(activity, "");
+        out.setVisibility(View.GONE);
+        TextView source = Ui.note(activity, "");
+        source.setVisibility(View.GONE);
+        EditText question = new EditText(activity);
+        question.setHint("Ask a question about this result (optional)");
+        question.setTextSize(13f);
+        question.setFilters(new InputFilter[]{new InputFilter.LengthFilter(300)});
+        Button go = Ui.secondary(activity, "Explain", null);
+        Button stop = Ui.secondary(activity, "Stop", null);
+        stop.setVisibility(View.GONE);
+        go.setOnClickListener(v -> {
+            FindingSet fs = lastFindings;
+            if (fs == null) return;
+            if (aiToken != null) aiToken.cancel();
+            CancellationToken t = new CancellationToken();
+            aiToken = t;
+            go.setEnabled(false);
+            stop.setVisibility(View.VISIBLE);
+            out.setVisibility(View.VISIBLE);
+            out.setText(svc.model.getState() == ModelState.READY ? "The on-device model is writing…" : "Preparing guidance…");
+            source.setVisibility(View.GONE);
+            String q = question.getText() == null ? "" : question.getText().toString();
+            String lang = svc.repo.getLanguage();
+            String submitted = lastSubmittedText;
+            boolean threat = lastThreatMatch;
+            aiWorker.execute(() -> {
+                ExplanationService.Outcome o = svc.explanations.explain(fs, submitted, q, lang, threat, t);
+                activity.runOnUiThread(() -> {
+                    go.setEnabled(true);
+                    stop.setVisibility(View.GONE);
+                    if (o.cancelled) {
+                        out.setText("Stopped.");
+                        return;
+                    }
+                    out.setText(formatExplanation(o.explanation, fs));
+                    source.setVisibility(View.VISIBLE);
+                    source.setText(o.explanation.sourceLabel() + (o.note.isEmpty() ? "" : "\n" + o.note)
+                            + "\nThis explanation can't change the result above and doesn't contact anyone.");
+                });
+            });
+        });
+        stop.setOnClickListener(v -> { if (aiToken != null) aiToken.cancel(); });
+        box.addView(question);
+        LinearLayout r = Ui.row(activity);
+        LinearLayout.LayoutParams g = Ui.weight(2f);
+        g.rightMargin = dp(8);
+        r.addView(go, g);
+        r.addView(stop, Ui.weight(1f));
+        box.addView(r);
+        box.addView(out);
+        box.addView(source);
         return box;
     }
 
-    private View createScenarioChip(String label, String presetText) {
-        TextView chip = new TextView(activity);
-        chip.setText(label);
-        chip.setTextSize(12f);
-        chip.setTypeface(Typeface.DEFAULT_BOLD);
-        chip.setTextColor(Color.parseColor("#141414"));
-        chip.setBackground(createCardDrawable(Color.WHITE, Color.parseColor("#E0E0DC"), dp(20)));
-        chip.setPadding(dp(12), dp(8), dp(12), dp(8));
-
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.rightMargin = dp(8);
-        chip.setLayoutParams(lp);
-
-        chip.setOnClickListener(v -> {
-            if (etInput != null) {
-                etInput.setText(presetText);
-                runCheck(presetText);
-            }
-        });
-
-        return chip;
-    }
-
-    public void runCheck(String text) {
-        KidsAppState.getInstance().incrementCheckCount();
-
-        if (currentMode == 0) {
-            lastResult = evaluateMessage(text);
-        } else if (currentMode == 1) {
-            lastResult = evaluateLink(text);
-        } else {
-            lastResult = evaluateFile(text);
-        }
-
-        renderResult(lastResult);
-    }
-
-    private CheckResult evaluateMessage(String text) {
-        String lower = text.toLowerCase();
-        HinglishContextEvaluator.ContextEvaluation eval = HinglishContextEvaluator.evaluate(text);
-
-        List<String> warnings = new ArrayList<>();
-        CheckVerdict verdict = CheckVerdict.LOOKS_OKAY;
-        String summary;
-        String whyItMatters;
-        List<String> nextSteps = new ArrayList<>();
-
-        // Secrecy or platform hopping
-        if (eval.hasSecrecy) {
-            warnings.add("Demands secrecy ('don't tell anyone', 'mummy papa ko mat batana')");
-        }
-        if (eval.hasPlatformHopping) {
-            warnings.add("Asks to switch to private channels (Telegram, Snapchat, private room)");
-        }
-        if (eval.hasGamingScam) {
-            warnings.add("Promises free game currency (Robux, diamonds, redeem code)");
-        }
-        if (eval.hasPrivacyInvasion) {
-            warnings.add("Asks for camera, private photo, or private video call");
-        }
-
-        // OTP / Password theft
-        boolean asksPassword = lower.contains("password") || lower.contains("login") || lower.contains("credentials");
-        boolean asksOtp = lower.contains("otp") || lower.contains("pin") || lower.contains("code");
-        if (asksPassword || asksOtp) {
-            warnings.add("Asks for secret login credentials, passwords, or one-time codes (OTP)");
-        }
-
-        // Bullying / Harassment
-        boolean isMean = lower.contains("worst player") || lower.contains("nobody likes you") ||
-                lower.contains("hate you") || lower.contains("loser") || lower.contains("delete your account");
-        if (isMean) {
-            warnings.add("Contains hurtful, mean, or bullying language intended to make you feel bad");
-        }
-
-        if (asksPassword || asksOtp || eval.hasPrivacyInvasion) {
-            verdict = CheckVerdict.WARNING_SIGNS;
-            summary = "This message is asking for sensitive private information or pressuring you into dangerous secrets.";
-            whyItMatters = "Real games, teachers, and companies never ask for your password or SMS codes. Anyone asking you to keep secrets from your parents is not following safe boundaries.";
-            nextSteps.add("Do not send any passwords, OTP codes, or photos");
-            nextSteps.add("Do not feel guilty or scared—you did nothing wrong");
-            nextSteps.add("Show this message to a parent, elder sibling, or trusted teacher right away");
-            nextSteps.add("Block the sender and report them in the app");
-        } else if (eval.hasSecrecy || eval.hasGamingScam || eval.hasPlatformHopping || isMean) {
-            verdict = CheckVerdict.BE_CAREFUL;
-            summary = "There are red flags in this message that you should be careful about.";
-            whyItMatters = "Scammers often use fake rewards or emotional pressure to trick people. Free item generators almost always steal accounts.";
-            nextSteps.add("Pause before replying or clicking anything");
-            nextSteps.add("Remember that genuine friends don't demand dangerous secrets");
-            nextSteps.add("Check with a trusted adult before taking any action");
-        } else if (eval.hasBenignCounterSignal || lower.contains("homework") || lower.contains("project") || lower.contains("school")) {
-            verdict = CheckVerdict.LOOKS_OKAY;
-            summary = "This looks like a regular, friendly school or personal conversation.";
-            whyItMatters = "No scam words, secrecy pressure, or suspicious requests were detected.";
-            nextSteps.add("You can continue the conversation normally");
-            nextSteps.add("If things ever turn strange later, you can always check again");
-        } else {
-            verdict = CheckVerdict.CANNOT_TELL;
-            summary = "There are no obvious scam keywords, but context matters most.";
-            whyItMatters = "We can check text patterns, but how the message makes you feel is what counts.";
-            nextSteps.add("If something feels strange or gives you an uncomfortable feeling in your gut, ask a trusted adult");
-            nextSteps.add("Never share personal details like your address, school name, or passwords");
-        }
-
-        return new CheckResult(
-                verdict,
-                summary,
-                warnings,
-                whyItMatters,
-                nextSteps,
-                false,
-                "This check is an on-device helper tool, not a guarantee. If anything feels uncomfortable, talk to an adult you trust."
-        );
-    }
-
-    private CheckResult evaluateLink(String url) {
-        String lower = url.toLowerCase().trim();
-        List<String> warnings = new ArrayList<>();
-        CheckVerdict verdict = CheckVerdict.LOOKS_OKAY;
-        String summary;
-        String whyItMatters;
-        List<String> nextSteps = new ArrayList<>();
-
-        boolean hasHttpOnly = lower.startsWith("http://");
-        boolean hasSuspiciousTld = lower.contains(".top") || lower.contains(".xyz") ||
-                lower.contains(".buzz") || lower.contains(".click") || lower.contains(".tk") || lower.contains(".gq");
-        boolean hasScamWords = lower.contains("robux") || lower.contains("free-skin") ||
-                lower.contains("login") || lower.contains("verify") || lower.contains("claim") || lower.contains("gift");
-        boolean isRawIp = lower.matches(".*\\b\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\b.*");
-
-        if (hasSuspiciousTld) {
-            warnings.add("Uses an uncommon domain extension often seen in temporary scam links (.top, .xyz)");
-        }
-        if (isRawIp) {
-            warnings.add("Direct numbers instead of an official web address (Raw IP address)");
-        }
-        if (hasScamWords) {
-            warnings.add("Web link contains keywords common in fake login and giveaway scams");
-        }
-        if (hasHttpOnly) {
-            warnings.add("Not secure (HTTP instead of HTTPS; connection is unencrypted)");
-        }
-
-        if (hasSuspiciousTld || isRawIp || (hasScamWords && !lower.contains("google.com") && !lower.contains("roblox.com"))) {
-            verdict = CheckVerdict.WARNING_SIGNS;
-            summary = "This web link has multiple warning signs of a fake website or phishing trap.";
-            whyItMatters = "Scammers set up fake websites that look like real games to steal passwords and phone numbers.";
-            nextSteps.add("Do not open the link or enter any login info on that page");
-            nextSteps.add("Never type your gaming account password on external links");
-            nextSteps.add("Show the link to an adult if a friend sent it to you");
-        } else if (hasHttpOnly || lower.length() > 100) {
-            verdict = CheckVerdict.BE_CAREFUL;
-            summary = "Be cautious with this link. It does not use secure encryption or has unusual length.";
-            whyItMatters = "Always make sure a website is verified before typing anything private.";
-            nextSteps.add("Only visit websites that start with https://");
-            nextSteps.add("If you are not sure who sent this link, don't tap it");
-        } else {
-            verdict = CheckVerdict.LOOKS_OKAY;
-            summary = "No obvious fake scam patterns or deceptive address formats were found.";
-            whyItMatters = "The address structure appears normal, but remember to never share passwords on the web.";
-            nextSteps.add("You can visit the page if it's from a person or website you trust");
-            nextSteps.add("If the website asks for your password or phone number, close it immediately");
-        }
-
-        return new CheckResult(
-                verdict,
-                summary,
-                warnings,
-                whyItMatters,
-                nextSteps,
-                false,
-                "Local heuristic check only. Live web reputation was not checked."
-        );
-    }
-
-    private CheckResult evaluateFile(String fileName) {
-        String lower = fileName.toLowerCase().trim();
-        List<String> warnings = new ArrayList<>();
-        CheckVerdict verdict;
-        String summary;
-        String whyItMatters;
-        List<String> nextSteps = new ArrayList<>();
-
-        boolean isApk = lower.endsWith(".apk") || lower.contains(".apk");
-        boolean isExecutable = lower.endsWith(".exe") || lower.endsWith(".bat") || lower.endsWith(".zip");
-        boolean isModded = lower.contains("mod") || lower.contains("hack") || lower.contains("unlimited") || lower.contains("crack");
-
-        if (isApk) {
-            warnings.add("Android App Package (.apk) downloaded from outside Google Play");
-        }
-        if (isModded) {
-            warnings.add("Promoted as a modified or hacked game file (high malware risk)");
-        }
-        if (isExecutable) {
-            warnings.add("Archive or executable file type");
-        }
-
-        if (isApk || isModded) {
-            verdict = CheckVerdict.WARNING_SIGNS;
-            summary = "This is an app installer from the internet. Installing unknown apps carries serious security risks.";
-            whyItMatters = "Apps downloaded from web browsers bypass Google Play's built-in security scans. They can contain hidden tools that steal your photos, read your messages, or slow down your phone.";
-            nextSteps.add("Do not tap 'Install' or give it permission to install unknown apps");
-            nextSteps.add("Delete the downloaded file from your Downloads folder");
-            nextSteps.add("Only download apps through the official Google Play Store");
-            nextSteps.add("Show the download to a parent or adult so they can help you inspect it");
-        } else {
-            verdict = CheckVerdict.BE_CAREFUL;
-            summary = "Always be cautious with files downloaded from unknown web pages or group chats.";
-            whyItMatters = "Files sent by strangers can be disguised to look innocent.";
-            nextSteps.add("Make sure you know who sent the file");
-            nextSteps.add("Check with an adult if you didn't specifically search for this download");
-        }
-
-        return new CheckResult(
-                verdict,
-                summary,
-                warnings,
-                whyItMatters,
-                nextSteps,
-                false,
-                "On-device file extension inspection. Unknown packages should never be installed without adult guidance."
-        );
-    }
-
-    private void renderResult(CheckResult res) {
-        if (containerResult == null || res == null) return;
-
-        containerResult.removeAllViews();
-        containerResult.setVisibility(View.VISIBLE);
-
-        LinearLayout card = new LinearLayout(activity);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setBackground(createCardDrawable(Color.WHITE, Color.parseColor("#E6E6E2"), dp(16)));
-        card.setPadding(dp(20), dp(20), dp(20), dp(20));
-
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.topMargin = dp(8);
-        card.setLayoutParams(lp);
-
-        // 1. Verdict Badge
-        CheckVerdict v = res.getVerdict();
-        LinearLayout badgeBox = new LinearLayout(activity);
-        badgeBox.setOrientation(LinearLayout.HORIZONTAL);
-        badgeBox.setGravity(Gravity.CENTER_VERTICAL);
-        badgeBox.setBackground(createCardDrawable(
-                Color.parseColor(v.getBgColorHex()),
-                Color.parseColor(v.getTextColorHex()),
-                dp(12)
-        ));
-        badgeBox.setPadding(dp(14), dp(8), dp(14), dp(8));
-        LinearLayout.LayoutParams badgeLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        badgeLp.bottomMargin = dp(14);
-
-        TextView tvEmoji = new TextView(activity);
-        tvEmoji.setText(v.getBadgeEmoji());
-        tvEmoji.setTextSize(16f);
-        tvEmoji.setPadding(0, 0, dp(8), 0);
-        badgeBox.addView(tvEmoji);
-
-        TextView tvVerdict = new TextView(activity);
-        tvVerdict.setText(v.getLabel());
-        tvVerdict.setTextSize(14f);
-        tvVerdict.setTypeface(Typeface.DEFAULT_BOLD);
-        tvVerdict.setTextColor(Color.parseColor(v.getTextColorHex()));
-        badgeBox.addView(tvVerdict);
-
-        card.addView(badgeBox, badgeLp);
-
-        // 2. Summary
-        TextView tvSummary = new TextView(activity);
-        tvSummary.setText(res.getSummary());
-        tvSummary.setTextSize(15f);
-        tvSummary.setTypeface(Typeface.DEFAULT_BOLD);
-        tvSummary.setTextColor(Color.parseColor("#141414"));
-        tvSummary.setLineSpacing(dp(2), 1.15f);
-        LinearLayout.LayoutParams sumLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        sumLp.bottomMargin = dp(12);
-        card.addView(tvSummary, sumLp);
-
-        // 3. Warning Signs (if any)
-        if (!res.getWarningSigns().isEmpty()) {
-            TextView tvWsTitle = new TextView(activity);
-            tvWsTitle.setText("Warning signs detected:");
-            tvWsTitle.setTextSize(12.5f);
-            tvWsTitle.setTypeface(Typeface.DEFAULT_BOLD);
-            tvWsTitle.setTextColor(Color.parseColor("#855A12"));
-            LinearLayout.LayoutParams wsTitleLp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            wsTitleLp.bottomMargin = dp(6);
-            card.addView(tvWsTitle, wsTitleLp);
-
-            for (String sign : res.getWarningSigns()) {
-                TextView tvSign = new TextView(activity);
-                tvSign.setText("•  " + sign);
-                tvSign.setTextSize(13f);
-                tvSign.setTextColor(Color.parseColor("#333333"));
-                tvSign.setLineSpacing(dp(2), 1.15f);
-                LinearLayout.LayoutParams signLp = new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                signLp.bottomMargin = dp(4);
-                signLp.leftMargin = dp(4);
-                card.addView(tvSign, signLp);
+    private static String formatExplanation(SafetyExplanation e, FindingSet fs) {
+        StringBuilder b = new StringBuilder(e.summary);
+        if (!e.evidenceRefs.isEmpty()) {
+            b.append("\n\nBased on:");
+            for (String id : e.evidenceRefs) {
+                Finding f = fs.byId(id);
+                if (f != null) b.append("\n•  ").append(f.title);
             }
         }
+        b.append("\n\nNext steps:");
+        for (String s : e.nextSteps) b.append("\n✔  ").append(s);
+        if (!e.limitations.isEmpty()) b.append("\n\n").append(e.limitations);
+        return b.toString();
+    }
 
-        // 4. Why It Matters
-        TextView tvWhyTitle = new TextView(activity);
-        tvWhyTitle.setText("Why this matters:");
-        tvWhyTitle.setTextSize(12.5f);
-        tvWhyTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        tvWhyTitle.setTextColor(Color.parseColor("#141414"));
-        LinearLayout.LayoutParams whyTitleLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        whyTitleLp.topMargin = dp(10);
-        whyTitleLp.bottomMargin = dp(4);
-        card.addView(tvWhyTitle, whyTitleLp);
+    // ---------------------------------------------------------------------------------------- misc
 
-        TextView tvWhy = new TextView(activity);
-        tvWhy.setText(res.getWhyItMatters());
-        tvWhy.setTextSize(13f);
-        tvWhy.setTextColor(Color.parseColor("#555555"));
-        tvWhy.setLineSpacing(dp(2), 1.15f);
-        LinearLayout.LayoutParams whyLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        whyLp.bottomMargin = dp(12);
-        card.addView(tvWhy, whyLp);
-
-        // 5. Next Steps
-        TextView tvStepsTitle = new TextView(activity);
-        tvStepsTitle.setText("What you can do right now:");
-        tvStepsTitle.setTextSize(12.5f);
-        tvStepsTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        tvStepsTitle.setTextColor(Color.parseColor("#386B57"));
-        LinearLayout.LayoutParams stepsTitleLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        stepsTitleLp.bottomMargin = dp(6);
-        card.addView(tvStepsTitle, stepsTitleLp);
-
-        for (String step : res.getNextSteps()) {
-            TextView tvStep = new TextView(activity);
-            tvStep.setText("✔  " + step);
-            tvStep.setTextSize(13f);
-            tvStep.setTextColor(Color.parseColor("#222222"));
-            tvStep.setLineSpacing(dp(2), 1.15f);
-            LinearLayout.LayoutParams stepLp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            stepLp.bottomMargin = dp(4);
-            stepLp.leftMargin = dp(4);
-            card.addView(tvStep, stepLp);
+    private void showProgress(String label, CancellationToken cancel) {
+        resultBox.removeAllViews();
+        LinearLayout c = Ui.vcard(activity);
+        TextView t = Ui.text(activity, label, 14f, Ui.INK, true);
+        c.addView(t);
+        ProgressBar bar = new ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal);
+        bar.setIndeterminate(true);
+        bar.setTag("bar");
+        c.addView(bar);
+        TextView stage = Ui.note(activity, "");
+        stage.setTag("stage");
+        c.addView(stage);
+        if (cancel != null) {
+            c.addView(Ui.secondary(activity, "Cancel", v -> {
+                cancel.cancel();
+                stage.setText("Cancelling…");
+            }));
         }
-
-        // 6. Honest Limitation Note
-        TextView tvLimitation = new TextView(activity);
-        tvLimitation.setText("ℹ️ " + res.getLimitationsNote());
-        tvLimitation.setTextSize(11.5f);
-        tvLimitation.setTextColor(Color.parseColor("#888888"));
-        tvLimitation.setLineSpacing(dp(2), 1.15f);
-        LinearLayout.LayoutParams limLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        limLp.topMargin = dp(12);
-        limLp.bottomMargin = dp(14);
-        card.addView(tvLimitation, limLp);
-
-        // 7. Action Button: Ask a Trusted Adult
-        Button btnAskAdult = new Button(activity);
-        btnAskAdult.setText("🚨  Ask a Trusted Adult for Help");
-        btnAskAdult.setTextColor(Color.WHITE);
-        btnAskAdult.setTextSize(13.5f);
-        btnAskAdult.setTypeface(Typeface.DEFAULT_BOLD);
-        btnAskAdult.setBackground(createSolidDrawable(Color.parseColor("#A63232"), dp(10)));
-        btnAskAdult.setOnClickListener(v1 -> {
-            if (host != null) host.showSosFlow();
-        });
-        card.addView(btnAskAdult);
-
-        containerResult.addView(card);
-
-        // Smooth scroll to result
-        rootView.post(() -> rootView.smoothScrollTo(0, card.getTop()));
+        resultBox.addView(c);
     }
 
-    private void resetInputs() {
-        if (etInput != null) etInput.setText("");
-        if (containerResult != null) {
-            containerResult.removeAllViews();
-            containerResult.setVisibility(View.GONE);
+    private void showError(String msg) {
+        resultBox.removeAllViews();
+        LinearLayout c = Ui.vcard(activity);
+        c.addView(Ui.badge(activity, CheckVerdict.CANNOT_TELL.getBadgeEmoji() + "  " + CheckVerdict.CANNOT_TELL.getLabel(), Ui.MUTED, Color.parseColor("#F0F0EE")));
+        c.addView(Ui.body(activity, msg));
+        resultBox.addView(c);
+    }
+
+    private void record(String type, String engine, String verdict, int signCount, List<String> indicatorIds) {
+        String summary = type.charAt(0) + type.substring(1).toLowerCase(Locale.ROOT) + " check: "
+                + (signCount == 0 ? "no warning signs" : signCount + " warning sign" + (signCount == 1 ? "" : "s"));
+        svc.repo.recordCheck(new CheckHistoryRecord(UUID.randomUUID().toString(), type, System.currentTimeMillis(), engine, verdict,
+                summary, String.join(",", indicatorIds), "EVALUATED"));
+    }
+
+    private static List<String> idsOfMessage(MessageAnalysisResult r) {
+        List<String> ids = new ArrayList<>();
+        for (SafetyIndicator i : r.getMatchedIndicators()) ids.add(i.getId());
+        return ids;
+    }
+
+    private String queryName(Uri uri) {
+        try (Cursor c = activity.getContentResolver().query(uri, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (c != null && c.moveToFirst() && !c.isNull(0)) return c.getString(0);
+        } catch (RuntimeException ignored) {
+            // provider without metadata
         }
-        lastResult = null;
+        String last = uri.getLastPathSegment();
+        return last == null ? "selected file" : last;
     }
 
-    private int dp(int value) {
-        return Math.round(value * density);
+    private long querySize(Uri uri) {
+        try (Cursor c = activity.getContentResolver().query(uri, new String[]{OpenableColumns.SIZE}, null, null, null)) {
+            if (c != null && c.moveToFirst() && !c.isNull(0)) return c.getLong(0);
+        } catch (RuntimeException ignored) {
+            // size unknown
+        }
+        return -1;
     }
 
-    private GradientDrawable createCardDrawable(int bgColor, int strokeColor, int radiusPx) {
-        GradientDrawable gd = new GradientDrawable();
-        gd.setColor(bgColor);
-        gd.setStroke(dp(1), strokeColor);
-        gd.setCornerRadius(radiusPx);
-        return gd;
+    private static String clip(String s, int n) {
+        return s == null ? "" : (s.length() <= n ? s : s.substring(0, n) + "…");
     }
 
-    private GradientDrawable createSolidDrawable(int bgColor, int radiusPx) {
-        GradientDrawable gd = new GradientDrawable();
-        gd.setColor(bgColor);
-        gd.setCornerRadius(radiusPx);
-        return gd;
+    public void onDestroy() {
+        cancelRunning();
+        worker.shutdownNow();
+        aiWorker.shutdownNow();
     }
 }

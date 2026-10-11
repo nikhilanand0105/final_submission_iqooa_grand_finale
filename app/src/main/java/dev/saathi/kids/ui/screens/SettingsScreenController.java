@@ -2,15 +2,10 @@ package dev.saathi.kids.ui.screens;
 
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.content.ClipData;
-import android.content.ClipboardManager;
-import android.content.Context;
 import android.graphics.Color;
 import android.graphics.Typeface;
-import android.graphics.drawable.GradientDrawable;
-import android.view.Gravity;
+import android.text.InputType;
 import android.view.View;
-import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -19,535 +14,506 @@ import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import dev.saathi.ai.explain.ModelState;
+import dev.saathi.family.BackendClient;
+import dev.saathi.family.FamilyStatus;
+import dev.saathi.family.PairingService;
+import dev.saathi.kids.BuildConfig;
+import dev.saathi.kids.KidsServices;
+import dev.saathi.kids.ui.Ui;
 import dev.saathi.kids.ui.model.TrustedAdult;
-import dev.saathi.kids.ui.state.KidsAppState;
 
-import java.util.List;
+import java.text.DateFormat;
+import java.util.Date;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
- * Saathi Kids Settings & Privacy Screen.
- * Contains:
- * 1. Transparent Privacy & Trust Manifesto
- * 2. Family Connection & Pairing Code (SAATHI-KIDS-4291)
- * 3. Trusted Adults Management (view, add, remove contacts)
- * 4. Language & Readability Preferences
- * 5. App Info & Child-Safety Principles
+ * Settings & privacy: what is shared and stored, family connection (server-backed), trusted adults (local),
+ * on-device AI status, language and text size, and data deletion. Every switch here changes persisted state
+ * that another part of the app reads.
  */
 public class SettingsScreenController {
 
+    public interface Host {
+        /** Re-creates the activity so a new text size applies everywhere. */
+        void applyTextSize();
+        void requestNotificationPermission();
+        void openNotificationAccessSettings();
+        void openSafeBrowser();
+        void openSafetyAlerts();
+    }
+
     private final Activity activity;
-    private final float density;
+    private final Host host;
+    private final KidsServices svc;
+    private final ExecutorService worker = Executors.newSingleThreadExecutor();
 
-    private ScrollView rootView;
-    private LinearLayout containerAdultsList;
-    private TextView tvLanguageLabel;
-    private Switch switchLargeText;
-    private Switch switchHighContrast;
+    private ScrollView root;
+    private LinearLayout protectionCard, familyCard, adultsCard, aiCard, prefsCard, dataCard;
+    private FamilyStatus family;
+    private boolean familyLoading;
+    private final Runnable localListener = this::renderLocal;
+    private final Runnable aiListener = this::renderAi;
 
-    public SettingsScreenController(Activity activity) {
+    public SettingsScreenController(Activity activity, Host host) {
         this.activity = activity;
-        this.density = activity.getResources().getDisplayMetrics().density;
-        createView();
-        KidsAppState.getInstance().addListener(this::render);
+        this.host = host;
+        this.svc = KidsServices.get(activity);
+        build();
+        svc.repo.addListener(localListener);
+        svc.model.addListener(aiListener);
+        dev.saathi.kids.storage.SafetyEventStore.get(activity).addListener(localListener);
     }
 
     public View getView() {
-        return rootView;
+        return root;
     }
 
-    private void createView() {
-        rootView = new ScrollView(activity);
-        rootView.setLayoutParams(new ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-        ));
-        rootView.setFillViewport(true);
-        rootView.setBackgroundColor(Color.parseColor("#F7F7F5"));
+    private int dp(int v) {
+        return Ui.dp(activity, v);
+    }
 
-        LinearLayout layout = new LinearLayout(activity);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setPadding(dp(20), dp(20), dp(20), dp(60));
+    private void build() {
+        root = new ScrollView(activity);
+        root.setFillViewport(true);
+        root.setBackgroundColor(Ui.BG);
+        LinearLayout l = new LinearLayout(activity);
+        l.setOrientation(LinearLayout.VERTICAL);
+        l.setPadding(dp(20), dp(20), dp(20), dp(60));
+        root.addView(l);
 
-        // 1. Header
-        layout.addView(buildHeader());
+        TextView h = Ui.text(activity, "Settings & Privacy ⚙️", 24f, Ui.INK, true);
+        h.setTypeface(Typeface.create("sans-serif-black", Typeface.BOLD));
+        l.addView(h);
+        TextView sub = Ui.text(activity, "What Saathi keeps, what it shares, and who can help you.", 13.5f, Color.parseColor("#555555"), false);
+        sub.setPadding(0, dp(4), 0, dp(14));
+        l.addView(sub);
 
-        // 2. Privacy & Trust Manifesto Card
-        layout.addView(buildManifestoCard());
-
-        // 3. Family Connection Card
-        layout.addView(buildFamilyConnectionCard());
-
-        // 4. Trusted Adults Management Card
-        layout.addView(buildTrustedAdultsCard());
-
-        // 5. Language & Display Preferences Card
-        layout.addView(buildPreferencesCard());
-
-        // 6. App Info Footer
-        layout.addView(buildAppInfoFooter());
-
-        rootView.addView(layout);
+        l.addView(privacyCard());
+        protectionCard = Ui.vcard(activity);
+        l.addView(protectionCard);
+        familyCard = Ui.vcard(activity);
+        adultsCard = Ui.vcard(activity);
+        aiCard = Ui.vcard(activity);
+        prefsCard = Ui.vcard(activity);
+        dataCard = Ui.vcard(activity);
+        l.addView(familyCard);
+        l.addView(adultsCard);
+        l.addView(aiCard);
+        l.addView(prefsCard);
+        l.addView(dataCard);
+        l.addView(Ui.note(activity, "Saathi Kids " + BuildConfig.VERSION_NAME));
         render();
     }
 
-    private View buildHeader() {
-        LinearLayout box = new LinearLayout(activity);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(0, dp(4), 0, dp(14));
-
-        TextView tvTitle = new TextView(activity);
-        tvTitle.setText("Settings & Privacy ⚙️");
-        tvTitle.setTextSize(24f);
-        tvTitle.setTypeface(Typeface.create("sans-serif-black", Typeface.BOLD));
-        tvTitle.setTextColor(Color.parseColor("#141414"));
-        box.addView(tvTitle);
-
-        TextView tvSub = new TextView(activity);
-        tvSub.setText("Everything about your privacy boundaries, trusted contacts, and family connection.");
-        tvSub.setTextSize(13.5f);
-        tvSub.setTextColor(Color.parseColor("#555555"));
-        tvSub.setLineSpacing(dp(2), 1.15f);
-        LinearLayout.LayoutParams subLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        subLp.topMargin = dp(4);
-        box.addView(tvSub, subLp);
-
-        return box;
+    public void render() {
+        renderProtection();
+        renderLocal();
+        renderAi();
+        if (family == null && !familyLoading) refreshFamily();
+        else renderFamily();
     }
 
-    private View buildManifestoCard() {
-        LinearLayout card = new LinearLayout(activity);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setBackground(createCardDrawable(Color.WHITE, Color.parseColor("#E6E6E2"), dp(16)));
-        card.setPadding(dp(20), dp(18), dp(20), dp(18));
-
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.bottomMargin = dp(16);
-        card.setLayoutParams(lp);
-
-        TextView tvTitle = new TextView(activity);
-        tvTitle.setText("Our Privacy Promise to You 🔒");
-        tvTitle.setTextSize(16f);
-        tvTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        tvTitle.setTextColor(Color.parseColor("#141414"));
-        card.addView(tvTitle);
-
-        TextView tvDesc = new TextView(activity);
-        tvDesc.setText("Saathi Kids is designed to support you, not spy on you. Here is exactly how your data is handled:");
-        tvDesc.setTextSize(12.5f);
-        tvDesc.setTextColor(Color.parseColor("#666666"));
-        tvDesc.setLineSpacing(dp(2), 1.15f);
-        LinearLayout.LayoutParams descLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        descLp.topMargin = dp(4);
-        descLp.bottomMargin = dp(12);
-        card.addView(tvDesc, descLp);
-
-        // Good items
-        card.addView(createManifestoItem("✅", "Checks stay on your device", "When you test a message or link, our engine checks it locally. Nothing is uploaded to advertising servers."));
-        card.addView(createManifestoItem("✅", "You choose what to check", "We do not run background keyloggers or silently read your private conversations. You paste what you want to inspect."));
-        card.addView(createManifestoItem("🛡️", "No GPS surveillance", "We do not track where you walk, bike, or go after school."));
-        card.addView(createManifestoItem("🛡️", "No ads or data selling", "Your activity is never used for commercial marketing or social media tracking."));
-
-        return card;
+    private void renderLocal() {
+        renderAdults();
+        renderPrefs();
+        renderData();
     }
 
-    private View createManifestoItem(String icon, String title, String explanation) {
-        LinearLayout row = new LinearLayout(activity);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.bottomMargin = dp(8);
-        row.setLayoutParams(lp);
-
-        TextView tvIcon = new TextView(activity);
-        tvIcon.setText(icon);
-        tvIcon.setTextSize(14f);
-        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        iconLp.rightMargin = dp(8);
-        row.addView(tvIcon, iconLp);
-
-        LinearLayout textCol = new LinearLayout(activity);
-        textCol.setOrientation(LinearLayout.VERTICAL);
-
-        TextView tvT = new TextView(activity);
-        tvT.setText(title);
-        tvT.setTextSize(13f);
-        tvT.setTypeface(Typeface.DEFAULT_BOLD);
-        tvT.setTextColor(Color.parseColor("#222222"));
-        textCol.addView(tvT);
-
-        TextView tvE = new TextView(activity);
-        tvE.setText(explanation);
-        tvE.setTextSize(12f);
-        tvE.setTextColor(Color.parseColor("#666666"));
-        tvE.setLineSpacing(dp(1), 1.15f);
-        textCol.addView(tvE);
-
-        row.addView(textCol);
-        return row;
+    private View privacyCard() {
+        LinearLayout c = Ui.vcard(activity);
+        c.addView(Ui.title(activity, "How your information is handled 🔒"));
+        c.addView(Ui.body(activity, "✅ Message checks and file checks run only on this phone."));
+        c.addView(Ui.body(activity, "✅ Link checks run on this phone. The website part of a link is sent to the online safety list only if you turn that on in the Link tab."));
+        c.addView(Ui.body(activity, "✅ Saathi never reads your chats, contacts or browsing by itself. You choose what to check."));
+        c.addView(Ui.body(activity, "✅ Check history keeps only the result type and time — not the message, link or file name."));
+        c.addView(Ui.body(activity, "✅ If you connect with your family, they only get help requests you choose to send."));
+        c.addView(Ui.body(activity, "✅ Location is only added to a help request if you switch it on for that request."));
+        return c;
     }
 
-    private View buildFamilyConnectionCard() {
-        LinearLayout card = new LinearLayout(activity);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setBackground(createCardDrawable(Color.WHITE, Color.parseColor("#E6E6E2"), dp(16)));
-        card.setPadding(dp(20), dp(18), dp(20), dp(18));
+    // ---------------------------------------------------------------- background protection (real Android state)
 
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.bottomMargin = dp(16);
-        card.setLayoutParams(lp);
-
-        TextView tvTitle = new TextView(activity);
-        tvTitle.setText("Family Connection 👨‍👩‍👧");
-        tvTitle.setTextSize(16f);
-        tvTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        tvTitle.setTextColor(Color.parseColor("#141414"));
-        card.addView(tvTitle);
-
-        TextView tvStatus = new TextView(activity);
-        tvStatus.setText("● Connected with Saathi Family");
-        tvStatus.setTextSize(12.5f);
-        tvStatus.setTypeface(Typeface.DEFAULT_BOLD);
-        tvStatus.setTextColor(Color.parseColor("#386B57"));
-        LinearLayout.LayoutParams statusLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        statusLp.topMargin = dp(4);
-        statusLp.bottomMargin = dp(10);
-        card.addView(tvStatus, statusLp);
-
-        // Pairing Code Box
-        LinearLayout codeBox = new LinearLayout(activity);
-        codeBox.setOrientation(LinearLayout.HORIZONTAL);
-        codeBox.setGravity(Gravity.CENTER_VERTICAL);
-        codeBox.setBackground(createCardDrawable(Color.parseColor("#F5F5F3"), Color.parseColor("#DCDCD8"), dp(10)));
-        codeBox.setPadding(dp(14), dp(10), dp(14), dp(10));
-
-        LinearLayout.LayoutParams codeBoxLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        codeBoxLp.bottomMargin = dp(10);
-
-        TextView tvCode = new TextView(activity);
-        tvCode.setText(KidsAppState.getInstance().getFamilyPairingCode());
-        tvCode.setTextSize(15f);
-        tvCode.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-        tvCode.setTextColor(Color.parseColor("#141414"));
-        LinearLayout.LayoutParams codeLp = new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
-        codeBox.addView(tvCode, codeLp);
-
-        Button btnCopy = new Button(activity);
-        btnCopy.setText("Copy Code");
-        btnCopy.setTextSize(11f);
-        btnCopy.setTypeface(Typeface.DEFAULT_BOLD);
-        btnCopy.setTextColor(Color.parseColor("#141414"));
-        btnCopy.setBackground(createCardDrawable(Color.WHITE, Color.parseColor("#D0D0CC"), dp(6)));
-        btnCopy.setPadding(dp(10), dp(4), dp(10), dp(4));
-        btnCopy.setOnClickListener(v -> {
-            ClipboardManager cm = (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
-            if (cm != null) {
-                cm.setPrimaryClip(ClipData.newPlainText("Pairing Code", KidsAppState.getInstance().getFamilyPairingCode()));
-                Toast.makeText(activity, "Family pairing code copied!", Toast.LENGTH_SHORT).show();
+    private void renderProtection() {
+        LinearLayout c = protectionCard;
+        if (c == null) return;
+        c.removeAllViews();
+        c.addView(Ui.title(activity, "Background protection 🛡️"));
+        dev.saathi.safety.MonitoringStatus st = dev.saathi.kids.safety.MonitoringState.compute(activity);
+        String overall;
+        int color;
+        switch (st.overall) {
+            case ACTIVE: overall = "● On — checking notifications even when Saathi is closed"; color = Ui.GREEN; break;
+            case PARTIALLY_ACTIVE: overall = "◐ Partly on — see below"; color = Ui.AMBER; break;
+            case PERMISSION_REQUIRED: overall = "○ Off — notification access is needed"; color = Ui.FAINT; break;
+            case MONITORING_INTERRUPTED: overall = "◐ Interrupted — Android isn't running the listener right now"; color = Ui.AMBER; break;
+            default: overall = "○ Unavailable — see below"; color = Ui.RED; break;
+        }
+        c.addView(Ui.text(activity, overall, 12.5f, color, true));
+        for (dev.saathi.safety.MonitoringStatus.Item i : st.items) {
+            String name;
+            switch (i.capability) {
+                case NOTIFICATION_MONITORING: name = "Notification checks"; break;
+                case ALERT_DELIVERY: name = "Safety alerts"; break;
+                case GEMMA_MODEL: name = "AI model (Gemma)"; break;
+                case SAFE_BROWSER: name = "Safe Browser"; break;
+                case NETWORK_PROTECTION: name = "Other browsers"; break;
+                default: name = "Saved results"; break;
             }
+            c.addView(Ui.text(activity, name + ": " + i.state.name().toLowerCase().replace('_', ' '), 12.5f, Ui.INK, true));
+            c.addView(Ui.note(activity, i.detail + (i.fix.isEmpty() ? "" : " → " + i.fix)));
+        }
+        android.content.SharedPreferences stats = dev.saathi.kids.safety.SafetyEventProcessor.get(activity).stats();
+        long last = stats.getLong("last_processed_at", 0);
+        c.addView(Ui.note(activity, "Notifications checked: " + stats.getInt("processed", 0)
+                + (last > 0 ? " (last " + DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(new Date(last)) + ")" : "")
+                + " • text hidden by the app: " + stats.getInt("content_unavailable", 0)
+                + " • not checked (too many at once): " + stats.getInt("dropped", 0)));
+        c.addView(Ui.note(activity, "What Saathi can see: only the text that apps show in their notifications. It can't see messages without a "
+                + "notification, hidden previews, or what you type and send. Only websites opened in Saathi Safe Browser are checked."));
+        if (!dev.saathi.kids.safety.MonitoringState.notificationAccessGranted(activity)) {
+            c.addView(Ui.primary(activity, "Turn on notification checks", v -> new AlertDialog.Builder(activity)
+                    .setTitle("Let Saathi check notifications?")
+                    .setMessage("Android will show a settings screen. If you turn on access for Saathi Kids, Saathi can read the text in notifications "
+                            + "on this phone to look for threats, scams or signs that someone needs help. It checks on this phone; nothing is uploaded. "
+                            + "Results are saved here for 30 days and only shared if you ask for help. You can turn it off any time.")
+                    .setPositiveButton("Open settings", (d, w) -> host.openNotificationAccessSettings())
+                    .setNegativeButton("Not now", null)
+                    .show()));
+        } else {
+            c.addView(Ui.secondary(activity, "Turn off notification checks", v -> host.openNotificationAccessSettings()));
+        }
+        if (!dev.saathi.kids.safety.SafetyEventProcessor.get(activity).alerts().canPostNotifications()) {
+            c.addView(Ui.secondary(activity, "Allow Saathi to show alerts", v -> host.requestNotificationPermission()));
+        }
+        c.addView(Ui.secondary(activity, "Open Saathi Safe Browser", v -> host.openSafeBrowser()));
+        c.addView(Ui.secondary(activity, "See safety alerts", v -> host.openSafetyAlerts()));
+    }
+
+    // ---------------------------------------------------------------- family (server-backed)
+
+    private void refreshFamily() {
+        familyLoading = true;
+        renderFamily();
+        worker.execute(() -> {
+            FamilyStatus fs = svc.pairing.fetchStatus();
+            activity.runOnUiThread(() -> {
+                family = fs;
+                familyLoading = false;
+                renderFamily();
+            });
         });
-        codeBox.addView(btnCopy);
-
-        card.addView(codeBox, codeBoxLp);
-
-        TextView tvExplain = new TextView(activity);
-        tvExplain.setText("Your family can receive help requests if you send them and review completed quests. They cannot read your personal chats.");
-        tvExplain.setTextSize(12f);
-        tvExplain.setTextColor(Color.parseColor("#666666"));
-        tvExplain.setLineSpacing(dp(1), 1.15f);
-        card.addView(tvExplain);
-
-        return card;
     }
 
-    private View buildTrustedAdultsCard() {
-        LinearLayout card = new LinearLayout(activity);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setBackground(createCardDrawable(Color.WHITE, Color.parseColor("#E6E6E2"), dp(16)));
-        card.setPadding(dp(20), dp(18), dp(20), dp(18));
-
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.bottomMargin = dp(16);
-        card.setLayoutParams(lp);
-
-        LinearLayout topRow = new LinearLayout(activity);
-        topRow.setOrientation(LinearLayout.HORIZONTAL);
-        topRow.setGravity(Gravity.CENTER_VERTICAL);
-
-        TextView tvTitle = new TextView(activity);
-        tvTitle.setText("Trusted Adults Contacts 👥");
-        tvTitle.setTextSize(16f);
-        tvTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        tvTitle.setTextColor(Color.parseColor("#141414"));
-        LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
-        topRow.addView(tvTitle, titleLp);
-
-        Button btnAdd = new Button(activity);
-        btnAdd.setText("+ Add");
-        btnAdd.setTextSize(11f);
-        btnAdd.setTypeface(Typeface.DEFAULT_BOLD);
-        btnAdd.setTextColor(Color.parseColor("#141414"));
-        btnAdd.setBackground(createCardDrawable(Color.parseColor("#F5F5F3"), Color.parseColor("#D0D0CC"), dp(6)));
-        btnAdd.setPadding(dp(10), dp(4), dp(10), dp(4));
-        btnAdd.setOnClickListener(v -> showAddAdultDialog());
-        topRow.addView(btnAdd);
-
-        card.addView(topRow);
-
-        TextView tvSub = new TextView(activity);
-        tvSub.setText("People who will appear on your Help screen if you ever feel uncomfortable.");
-        tvSub.setTextSize(12f);
-        tvSub.setTextColor(Color.parseColor("#666666"));
-        LinearLayout.LayoutParams subLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        subLp.topMargin = dp(4);
-        subLp.bottomMargin = dp(12);
-        card.addView(tvSub, subLp);
-
-        containerAdultsList = new LinearLayout(activity);
-        containerAdultsList.setOrientation(LinearLayout.VERTICAL);
-        card.addView(containerAdultsList);
-
-        return card;
+    private void renderFamily() {
+        LinearLayout c = familyCard;
+        c.removeAllViews();
+        c.addView(Ui.title(activity, "Family connection 👨‍👩‍👧"));
+        if (familyLoading || family == null) {
+            c.addView(Ui.body(activity, "Checking with the Saathi server…"));
+            return;
+        }
+        String label;
+        int color;
+        switch (family.state) {
+            case ACTIVE: label = "● Connected with " + family.familyDisplayName + " (confirmed by the server)"; color = Ui.GREEN; break;
+            case PENDING_CONFIRMATION: label = "◐ Waiting for your adult to confirm in Saathi Personal"; color = Ui.AMBER; break;
+            case NOT_PAIRED: label = "○ Not connected"; color = Ui.FAINT; break;
+            case REVOKED: label = "○ Connection was turned off"; color = Ui.FAINT; break;
+            case NOT_CONFIGURED: label = "Not available in this version (server not configured)"; color = Ui.FAINT; break;
+            case UNREACHABLE: label = "Can't reach the server right now — connection status unknown"; color = Ui.AMBER; break;
+            default: label = "The server returned an error — connection status unknown"; color = Ui.AMBER; break;
+        }
+        c.addView(Ui.text(activity, label, 12.5f, color, true));
+        if (!family.message.isEmpty()) c.addView(Ui.note(activity, family.message));
+        if (family.state == FamilyStatus.State.ACTIVE) {
+            for (FamilyStatus.Adult a : family.adults) {
+                c.addView(Ui.body(activity, "• " + a.displayName + (a.canReceiveHelp ? " — can receive your help requests" : "")));
+            }
+        }
+        c.addView(Ui.note(activity, "What's shared: only help requests you confirm (reason, optional note, optional approximate location). "
+                + "Your checks, messages, lessons and contacts are never shared."));
+        if (family.state == FamilyStatus.State.NOT_PAIRED || family.state == FamilyStatus.State.REVOKED) {
+            c.addView(Ui.primary(activity, "Enter a code from Saathi Personal", v -> showRedeemDialog()));
+        }
+        if ((family.state == FamilyStatus.State.ACTIVE || family.state == FamilyStatus.State.PENDING_CONFIRMATION) && family.pairingId != null) {
+            c.addView(Ui.secondary(activity, "Disconnect from family", v -> confirmUnpair(family.pairingId)));
+        }
+        if (family.state != FamilyStatus.State.NOT_CONFIGURED) {
+            c.addView(Ui.secondary(activity, "Refresh status", v -> refreshFamily()));
+        }
     }
 
-    private void showAddAdultDialog() {
-        AlertDialog.Builder builder = new AlertDialog.Builder(activity);
-        builder.setTitle("Add Trusted Adult");
-
+    private void showRedeemDialog() {
         LinearLayout form = new LinearLayout(activity);
         form.setOrientation(LinearLayout.VERTICAL);
-        form.setPadding(dp(20), dp(10), dp(20), dp(10));
-
-        final EditText etName = new EditText(activity);
-        etName.setHint("Name (e.g. Uncle Rohan)");
-        form.addView(etName);
-
-        final EditText etRelation = new EditText(activity);
-        etRelation.setHint("Relationship (e.g. Uncle / Teacher)");
-        form.addView(etRelation);
-
-        final EditText etPhone = new EditText(activity);
-        etPhone.setHint("Phone Number");
-        form.addView(etPhone);
-
-        builder.setView(form);
-        builder.setPositiveButton("Add Contact", (dialog, which) -> {
-            String name = etName.getText() != null ? etName.getText().toString().trim() : "";
-            String relation = etRelation.getText() != null ? etRelation.getText().toString().trim() : "";
-            String phone = etPhone.getText() != null ? etPhone.getText().toString().trim() : "";
-            if (!name.isEmpty()) {
-                KidsAppState.getInstance().addTrustedAdult(name, relation, phone);
-                Toast.makeText(activity, name + " added to trusted adults", Toast.LENGTH_SHORT).show();
-            }
-        });
-        builder.setNegativeButton("Cancel", null);
-        builder.show();
+        form.setPadding(dp(20), dp(8), dp(20), dp(8));
+        EditText code = new EditText(activity);
+        code.setHint("Code, e.g. AB12-CD34");
+        code.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        form.addView(code);
+        EditText name = new EditText(activity);
+        name.setHint("Your first name (shown to your family)");
+        name.setText(svc.repo.getChildDisplayName());
+        form.addView(name);
+        TextView info = Ui.note(activity, "Ask your adult to create a code in Saathi Personal. Codes work once and expire after 10 minutes. "
+                + "Your adult will need to confirm the connection.");
+        form.addView(info);
+        new AlertDialog.Builder(activity)
+                .setTitle("Connect with your family")
+                .setView(form)
+                .setPositiveButton("Connect", (d, w) -> {
+                    String c = code.getText().toString();
+                    String n = name.getText().toString();
+                    String nameErr = PairingService.validateDisplayName(n);
+                    if (PairingService.normalizeCode(c) == null || nameErr != null) {
+                        Toast.makeText(activity, nameErr != null ? nameErr : "That code should have 8 letters and numbers", Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    familyLoading = true;
+                    renderFamily();
+                    worker.execute(() -> {
+                        PairingService.RedeemResult r = svc.pairing.redeem(c, n);
+                        activity.runOnUiThread(() -> {
+                            familyLoading = false;
+                            if (r.ok) {
+                                svc.repo.setChildDisplayName(n);
+                                family = r.status;
+                            }
+                            Toast.makeText(activity, r.message, Toast.LENGTH_LONG).show();
+                            if (!r.ok) refreshFamily();
+                            else renderFamily();
+                        });
+                    });
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
     }
 
-    private View buildPreferencesCard() {
-        LinearLayout card = new LinearLayout(activity);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setBackground(createCardDrawable(Color.WHITE, Color.parseColor("#E6E6E2"), dp(16)));
-        card.setPadding(dp(20), dp(18), dp(20), dp(18));
+    private void confirmUnpair(String pairingId) {
+        new AlertDialog.Builder(activity)
+                .setTitle("Disconnect from your family?")
+                .setMessage("You won't be able to send help requests through Saathi until an adult connects you again.")
+                .setPositiveButton("Disconnect", (d, w) -> worker.execute(() -> {
+                    BackendClient.Result r = svc.pairing.revoke(pairingId);
+                    activity.runOnUiThread(() -> {
+                        Toast.makeText(activity, r.ok() ? "Disconnected" : "Couldn't disconnect: " + r.message, Toast.LENGTH_LONG).show();
+                        refreshFamily();
+                    });
+                }))
+                .setNegativeButton("Keep connected", null)
+                .show();
+    }
 
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.bottomMargin = dp(16);
-        card.setLayoutParams(lp);
+    // ---------------------------------------------------------------- trusted adults (local only)
 
-        TextView tvTitle = new TextView(activity);
-        tvTitle.setText("Display & Language Preferences 🎨");
-        tvTitle.setTextSize(16f);
-        tvTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        tvTitle.setTextColor(Color.parseColor("#141414"));
-        card.addView(tvTitle);
+    private void renderAdults() {
+        LinearLayout c = adultsCard;
+        c.removeAllViews();
+        LinearLayout top = Ui.row(activity);
+        top.addView(Ui.title(activity, "Trusted adults 👥"), Ui.weight(1f));
+        Button add = new Button(activity);
+        add.setText("+ Add");
+        add.setAllCaps(false);
+        add.setOnClickListener(v -> editAdultDialog(null));
+        top.addView(add);
+        c.addView(top);
+        c.addView(Ui.note(activity, "Saved on this phone only, so you can find their number quickly. Saving someone doesn't tell them, "
+                + "and they can't receive Saathi help requests unless they're connected through Saathi Personal."));
+        if (svc.repo.didLoadFail()) c.addView(Ui.text(activity, "Saved data couldn't be loaded.", 12.5f, Ui.RED, true));
+        if (svc.repo.getTrustedAdults().isEmpty()) {
+            c.addView(Ui.body(activity, "No one saved yet. Add a parent, relative or teacher you trust."));
+        }
+        for (TrustedAdult a : svc.repo.getTrustedAdults()) {
+            LinearLayout r = Ui.row(activity);
+            r.setPadding(0, dp(6), 0, dp(6));
+            LinearLayout col = new LinearLayout(activity);
+            col.setOrientation(LinearLayout.VERTICAL);
+            col.addView(Ui.text(activity, a.label(), 13.5f, Ui.INK, true));
+            col.addView(Ui.note(activity, (a.getPhone().isEmpty() ? "No phone number" : a.getPhone()) + " • saved on this phone only"));
+            r.addView(col, Ui.weight(1f));
+            Button edit = new Button(activity);
+            edit.setText("Edit");
+            edit.setAllCaps(false);
+            edit.setOnClickListener(v -> editAdultDialog(a));
+            r.addView(edit);
+            Button del = new Button(activity);
+            del.setText("Remove");
+            del.setAllCaps(false);
+            del.setOnClickListener(v -> new AlertDialog.Builder(activity)
+                    .setMessage("Remove " + a.getName() + " from this phone?")
+                    .setPositiveButton("Remove", (d, w) -> svc.repo.removeTrustedAdult(a.getId()))
+                    .setNegativeButton("Cancel", null).show());
+            r.addView(del);
+            c.addView(r);
+        }
+    }
 
-        // Language toggle row
-        LinearLayout langRow = new LinearLayout(activity);
-        langRow.setOrientation(LinearLayout.HORIZONTAL);
-        langRow.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout.LayoutParams langRowLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        langRowLp.topMargin = dp(12);
-        langRowLp.bottomMargin = dp(12);
-
-        tvLanguageLabel = new TextView(activity);
-        tvLanguageLabel.setText("Language: English");
-        tvLanguageLabel.setTextSize(13.5f);
-        tvLanguageLabel.setTextColor(Color.parseColor("#222222"));
-        LinearLayout.LayoutParams llLp = new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
-        langRow.addView(tvLanguageLabel, llLp);
-
-        Button btnToggleLang = new Button(activity);
-        btnToggleLang.setText("Switch to Hinglish");
-        btnToggleLang.setTextSize(11f);
-        btnToggleLang.setTypeface(Typeface.DEFAULT_BOLD);
-        btnToggleLang.setTextColor(Color.parseColor("#141414"));
-        btnToggleLang.setBackground(createCardDrawable(Color.parseColor("#F5F5F3"), Color.parseColor("#D0D0CC"), dp(6)));
-        btnToggleLang.setPadding(dp(10), dp(4), dp(10), dp(4));
-        btnToggleLang.setOnClickListener(v -> {
-            KidsAppState state = KidsAppState.getInstance();
-            if (state.isHinglish()) {
-                state.setLanguage("en");
-                btnToggleLang.setText("Switch to Hinglish");
-                tvLanguageLabel.setText("Language: English");
+    private void editAdultDialog(TrustedAdult existing) {
+        LinearLayout form = new LinearLayout(activity);
+        form.setOrientation(LinearLayout.VERTICAL);
+        form.setPadding(dp(20), dp(8), dp(20), dp(8));
+        EditText name = new EditText(activity);
+        name.setHint("Name");
+        EditText rel = new EditText(activity);
+        rel.setHint("Relationship (e.g. Aunt, Teacher) — optional");
+        EditText phone = new EditText(activity);
+        phone.setHint("Phone number — optional");
+        phone.setInputType(InputType.TYPE_CLASS_PHONE);
+        if (existing != null) {
+            name.setText(existing.getName());
+            rel.setText(existing.getRelation());
+            phone.setText(existing.getPhone());
+        }
+        TextView err = Ui.text(activity, "", 12f, Ui.RED, false);
+        form.addView(name);
+        form.addView(rel);
+        form.addView(phone);
+        form.addView(err);
+        AlertDialog dlg = new AlertDialog.Builder(activity)
+                .setTitle(existing == null ? "Add a trusted adult" : "Edit " + existing.getName())
+                .setView(form)
+                .setPositiveButton("Save", null)
+                .setNegativeButton("Cancel", null)
+                .create();
+        dlg.setOnShowListener(d -> dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            String n = name.getText().toString(), r = rel.getText().toString(), p = phone.getText().toString();
+            String e = existing == null ? svc.repo.addTrustedAdult(n, r, p) : svc.repo.updateTrustedAdult(existing.getId(), n, r, p);
+            if (e != null) {
+                err.setText(e);
             } else {
-                state.setLanguage("hi");
-                btnToggleLang.setText("Switch to English");
-                tvLanguageLabel.setText("Language: Hinglish");
+                Toast.makeText(activity, "Saved on this phone. " + n.trim() + " hasn't been told.", Toast.LENGTH_LONG).show();
+                dlg.dismiss();
             }
-            Toast.makeText(activity, "Language updated", Toast.LENGTH_SHORT).show();
-        });
-        langRow.addView(btnToggleLang);
-
-        card.addView(langRow, langRowLp);
-
-        // Large text switch
-        LinearLayout ltRow = new LinearLayout(activity);
-        ltRow.setOrientation(LinearLayout.HORIZONTAL);
-        ltRow.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout.LayoutParams ltRowLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        ltRowLp.bottomMargin = dp(8);
-
-        TextView tvLt = new TextView(activity);
-        tvLt.setText("Large Text & Bigger Buttons");
-        tvLt.setTextSize(13.5f);
-        tvLt.setTextColor(Color.parseColor("#222222"));
-        LinearLayout.LayoutParams ltLp = new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
-        ltRow.addView(tvLt, ltLp);
-
-        switchLargeText = new Switch(activity);
-        switchLargeText.setChecked(KidsAppState.getInstance().isLargeTypography());
-        switchLargeText.setOnCheckedChangeListener((buttonView, isChecked) -> {
-            KidsAppState.getInstance().setLargeTypography(isChecked);
-        });
-        ltRow.addView(switchLargeText);
-        card.addView(ltRow, ltRowLp);
-
-        // High contrast switch
-        LinearLayout hcRow = new LinearLayout(activity);
-        hcRow.setOrientation(LinearLayout.HORIZONTAL);
-        hcRow.setGravity(Gravity.CENTER_VERTICAL);
-
-        TextView tvHc = new TextView(activity);
-        tvHc.setText("High Contrast Mode");
-        tvHc.setTextSize(13.5f);
-        tvHc.setTextColor(Color.parseColor("#222222"));
-        LinearLayout.LayoutParams hcLp = new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
-        hcRow.addView(tvHc, hcLp);
-
-        switchHighContrast = new Switch(activity);
-        switchHighContrast.setChecked(KidsAppState.getInstance().isHighContrast());
-        switchHighContrast.setOnCheckedChangeListener((buttonView, isChecked) -> {
-            KidsAppState.getInstance().setHighContrast(isChecked);
-        });
-        hcRow.addView(switchHighContrast);
-        card.addView(hcRow);
-
-        return card;
+        }));
+        dlg.show();
     }
 
-    private View buildAppInfoFooter() {
-        LinearLayout box = new LinearLayout(activity);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setGravity(Gravity.CENTER_HORIZONTAL);
-        box.setPadding(dp(10), dp(10), dp(10), dp(20));
+    // ---------------------------------------------------------------- on-device AI
 
-        TextView tvApp = new TextView(activity);
-        tvApp.setText("Saathi Kids v1.0.0-kids\nYour Companion for Digital Safety\nDesigned with child-first safety principles.");
-        tvApp.setTextSize(11.5f);
-        tvApp.setTextColor(Color.parseColor("#888888"));
-        tvApp.setGravity(Gravity.CENTER);
-        tvApp.setLineSpacing(dp(2), 1.2f);
-        box.addView(tvApp);
-
-        return box;
-    }
-
-    public void render() {
-        KidsAppState state = KidsAppState.getInstance();
-
-        if (containerAdultsList != null) {
-            containerAdultsList.removeAllViews();
-            List<TrustedAdult> adults = state.getTrustedAdults();
-            for (TrustedAdult adult : adults) {
-                containerAdultsList.addView(buildAdultItemView(adult));
-            }
+    private void renderAi() {
+        LinearLayout c = aiCard;
+        if (c == null) return;
+        c.removeAllViews();
+        c.addView(Ui.title(activity, "On-device AI explanations ✨"));
+        ModelState st = svc.model.getState();
+        c.addView(Ui.text(activity, "Status: " + st.getDescription(), 12.5f, st == ModelState.READY ? Ui.GREEN : Ui.MUTED, true));
+        if (!svc.model.getModelId().isEmpty()) c.addView(Ui.body(activity, "Model file: " + svc.model.getModelId()));
+        if (!svc.model.getIntegrityNote().isEmpty()) c.addView(Ui.body(activity, "Integrity: " + svc.model.getIntegrityNote()));
+        if (!svc.model.getBackendUsed().isEmpty()) c.addView(Ui.body(activity, "Running on: " + svc.model.getBackendUsed()));
+        if (svc.model.getLastLoadMs() >= 0) c.addView(Ui.body(activity, "Last load time: " + svc.model.getLastLoadMs() + " ms"));
+        if (svc.model.getLastGenerationMs() >= 0) {
+            c.addView(Ui.body(activity, "Last answer: " + svc.model.getLastGenerationMs() + " ms, " + svc.model.getLastOutputChars() + " characters"));
         }
-
-        if (tvLanguageLabel != null) {
-            tvLanguageLabel.setText(state.isHinglish() ? "Language: Hinglish" : "Language: English");
+        if (!svc.model.getLastError().isEmpty() && st != ModelState.READY) c.addView(Ui.note(activity, svc.model.getLastError()));
+        c.addView(Ui.note(activity, "The AI only explains results that Saathi's checks already found. It runs on this phone, can't change a result, "
+                + "and never contacts anyone. Without a model, Saathi shows clearly-labelled rules-based guidance instead."));
+        if (st == ModelState.CLOSED || st == ModelState.FAILED || st == ModelState.RESOURCE_CONSTRAINED) {
+            c.addView(Ui.secondary(activity, "Load model", v -> svc.model.loadAsync()));
+        } else if (st == ModelState.READY) {
+            c.addView(Ui.secondary(activity, "Release model (free memory)", v -> svc.model.release()));
+        } else if (st == ModelState.UNAVAILABLE) {
+            c.addView(Ui.secondary(activity, "Look for model file again", v -> svc.model.refreshAvailability()));
         }
     }
 
-    private View buildAdultItemView(TrustedAdult adult) {
-        LinearLayout row = new LinearLayout(activity);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setBackground(createCardDrawable(Color.parseColor("#F9F9F8"), Color.parseColor("#EAEAE6"), dp(10)));
-        row.setPadding(dp(12), dp(10), dp(12), dp(10));
+    // ---------------------------------------------------------------- preferences
 
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.bottomMargin = dp(8);
-        row.setLayoutParams(lp);
+    private void renderPrefs() {
+        LinearLayout c = prefsCard;
+        c.removeAllViews();
+        c.addView(Ui.title(activity, "Language & text 🎨"));
+        boolean hi = "hi".equals(svc.repo.getLanguage());
+        LinearLayout r = Ui.row(activity);
+        r.addView(Ui.text(activity, "Language: " + (hi ? "हिन्दी (Hindi)" : "English"), 13.5f, Ui.INK, false), Ui.weight(1f));
+        Button t = new Button(activity);
+        t.setAllCaps(false);
+        t.setText(hi ? "Use English" : "हिन्दी चुनें");
+        t.setOnClickListener(v -> svc.repo.setLanguage(hi ? "en" : "hi"));
+        r.addView(t);
+        c.addView(r);
+        c.addView(Ui.note(activity, "Hindi is available for all lessons and for explanations. Other screens are still in English."));
 
-        LinearLayout textCol = new LinearLayout(activity);
-        textCol.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout.LayoutParams textColLp = new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
-        row.addView(textCol, textColLp);
-
-        TextView tvName = new TextView(activity);
-        tvName.setText(adult.getName() + " (" + adult.getRelationship() + ")");
-        tvName.setTextSize(13.5f);
-        tvName.setTypeface(Typeface.DEFAULT_BOLD);
-        tvName.setTextColor(Color.parseColor("#141414"));
-        textCol.addView(tvName);
-
-        TextView tvPhone = new TextView(activity);
-        tvPhone.setText(adult.getPhoneNumber());
-        tvPhone.setTextSize(12f);
-        tvPhone.setTextColor(Color.parseColor("#666666"));
-        textCol.addView(tvPhone);
-
-        Button btnRemove = new Button(activity);
-        btnRemove.setText("✕");
-        btnRemove.setTextSize(12f);
-        btnRemove.setTextColor(Color.parseColor("#888888"));
-        btnRemove.setBackground(null);
-        btnRemove.setOnClickListener(v -> {
-            KidsAppState.getInstance().removeTrustedAdult(adult.getId());
-            Toast.makeText(activity, "Removed " + adult.getName(), Toast.LENGTH_SHORT).show();
+        LinearLayout lt = Ui.row(activity);
+        lt.addView(Ui.text(activity, "Larger text", 13.5f, Ui.INK, false), Ui.weight(1f));
+        Switch sw = new Switch(activity);
+        sw.setChecked(svc.repo.isLargeText());
+        sw.setOnCheckedChangeListener((b, on) -> {
+            svc.repo.setLargeText(on);
+            host.applyTextSize();
         });
-        row.addView(btnRemove);
+        lt.addView(sw);
+        c.addView(lt);
 
-        return row;
+        if (svc.urlAnalyzer.getProvider().isConfigured()) {
+            LinearLayout ol = Ui.row(activity);
+            ol.addView(Ui.text(activity, "Ask the online safety list when checking links", 13.5f, Ui.INK, false), Ui.weight(1f));
+            Switch o = new Switch(activity);
+            o.setChecked(svc.repo.isOnlineLinkCheckAllowed());
+            o.setOnCheckedChangeListener((b, on) -> {
+                if (!on) {
+                    svc.repo.setOnlineLinkCheckAllowed(false);
+                    return;
+                }
+                b.setChecked(false);
+                new AlertDialog.Builder(activity)
+                        .setTitle("Send links to the online safety list?")
+                        .setMessage(svc.urlAnalyzer.getProvider().getDisclosure())
+                        .setPositiveButton("Allow", (d, w) -> svc.repo.setOnlineLinkCheckAllowed(true))
+                        .setNegativeButton("No", null)
+                        .show();
+            });
+            ol.addView(o);
+            c.addView(ol);
+        }
     }
 
-    private int dp(int value) {
-        return Math.round(value * density);
+    // ---------------------------------------------------------------- data
+
+    private void renderData() {
+        LinearLayout c = dataCard;
+        c.removeAllViews();
+        c.addView(Ui.title(activity, "Your data on this phone 🗂️"));
+        int checks = svc.repo.getCheckHistory().size();
+        c.addView(Ui.body(activity, checks + " check result" + (checks == 1 ? "" : "s") + " saved (type, result and time only)."));
+        if (checks > 0) {
+            long last = svc.repo.getCheckHistory().get(0).getTimestamp();
+            c.addView(Ui.note(activity, "Latest: " + DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(new Date(last))));
+        }
+        c.addView(Ui.secondary(activity, "Delete check history", v -> confirm("Delete all saved check results?", svc.repo::clearCheckHistory)));
+        int lessons = svc.repo.getCompletedLessonIds().size();
+        c.addView(Ui.body(activity, lessons + " lesson" + (lessons == 1 ? "" : "s") + " marked complete."));
+        c.addView(Ui.secondary(activity, "Reset lesson progress", v -> confirm("Mark all lessons as not done? This can't be undone.", svc.repo::resetLessonProgress)));
+        int alerts = dev.saathi.kids.storage.SafetyEventStore.get(activity).all().size();
+        c.addView(Ui.body(activity, alerts + " safety alert" + (alerts == 1 ? "" : "s") + " saved (kept 30 days)."));
+        if (alerts > 0) {
+            c.addView(Ui.secondary(activity, "Delete safety alerts", v -> confirm("Delete all saved safety alerts and clear both flags?",
+                    () -> dev.saathi.kids.storage.SafetyEventStore.get(activity).deleteAll())));
+        }
+        int help = svc.repo.getHelpRequests().size();
+        if (help > 0) {
+            c.addView(Ui.body(activity, help + " help request record" + (help == 1 ? "" : "s") + " on this phone."));
+            c.addView(Ui.secondary(activity, "Delete help request history from this phone",
+                    v -> confirm("Delete the list of your earlier help requests from this phone? (Requests already sent stay with the adult.)", svc.repo::clearHelpHistory)));
+        }
     }
 
-    private GradientDrawable createCardDrawable(int bgColor, int strokeColor, int radiusPx) {
-        GradientDrawable gd = new GradientDrawable();
-        gd.setColor(bgColor);
-        gd.setStroke(dp(1), strokeColor);
-        gd.setCornerRadius(radiusPx);
-        return gd;
+    private void confirm(String msg, Runnable action) {
+        new AlertDialog.Builder(activity)
+                .setMessage(msg)
+                .setPositiveButton("Yes, delete", (d, w) -> {
+                    action.run();
+                    Toast.makeText(activity, "Done", Toast.LENGTH_SHORT).show();
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    public void onDestroy() {
+        svc.repo.removeListener(localListener);
+        svc.model.removeListener(aiListener);
+        dev.saathi.kids.storage.SafetyEventStore.get(activity).removeListener(localListener);
+        worker.shutdownNow();
     }
 }

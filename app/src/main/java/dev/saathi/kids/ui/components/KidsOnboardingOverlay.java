@@ -10,7 +10,7 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-import dev.saathi.kids.ui.state.KidsAppState;
+import dev.saathi.kids.KidsServices;
 
 /**
  * 4-Step welcoming, reassuring onboarding flow for Saathi Kids.
@@ -55,15 +55,22 @@ public class KidsOnboardingOverlay {
                     "🔍",
                     "How Checking Works",
                     "You decide what to check, anytime",
-                    "You can paste a strange message, test a website link, or review a downloaded file. Saathi checks for common scam tricks and warning signs, then helps you know what to do next.\n\nWe don't read your chats automatically—you are always in control.",
+                    "You can paste a strange message, check a website link, or choose a downloaded app file. Saathi looks for common warning signs and helps you decide what to do next.\n\nWarning signs aren't proof, and no warning signs doesn't mean something is safe. We don't read your chats automatically — you are always in control.",
                     "USER-INITIATED ONLY"
             ),
             new StepContent(
                     "🔒",
                     "Privacy & Family Sharing",
                     "No secret tracking, no hidden reading",
-                    "Everything you check is processed right here on your phone. If your family is connected, you can choose to share safety reports together, but no one reads your private messages secretly.\n\nMutual trust and safety come first.",
-                    "ZERO SURVEILLANCE"
+                    "Message and file checks run on this phone. Link checks do too — the online safety list is only asked if you turn it on.\n\nIf your family is connected through Saathi Personal, they only get help requests you choose to send. No one can read your messages through Saathi.",
+                    "NO SECRET MONITORING"
+            ),
+            new StepContent(
+                    "🛡️",
+                    "Protection when Saathi is closed",
+                    "You choose what to turn on",
+                    "With your permission, Saathi can check the text that apps show in notifications — even when this app is closed — and warn you about threats, scams, or messages that sound like someone needs help.\n\nIt can't see messages without a notification or what you type. Websites are checked in Saathi Safe Browser. You can set this up later in Settings → Background protection.",
+                    "OPTIONAL • YOUR CHOICE"
             ),
             new StepContent(
                     "✨",
@@ -192,7 +199,7 @@ public class KidsOnboardingOverlay {
                 currentStep++;
                 renderCurrentStep();
             } else {
-                KidsAppState.getInstance().setOnboardingCompleted(true);
+                KidsServices.get(context).repo.setOnboardingCompleted(true);
                 container.setVisibility(View.GONE);
                 container.removeAllViews();
                 if (callback != null) callback.onCompleted();

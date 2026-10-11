@@ -22,9 +22,8 @@ public class ThreatRuleEvaluator {
         registeredRules.add(new ScreenShareAbuseRule());
         registeredRules.add(new TollFraudSmsRule());
 
-        // Known malware samples for reputation matching (e.g. Cerberus, Flubot, Sharkbot hashes)
-        knownMaliciousHashes.add("3a019b88f8d2dfbb187b47b4d187bdf559ef14c1d686f0b4d45543c8d1720d29");
-        knownMaliciousHashes.add("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"); // placeholder test
+        // No hashes are embedded: known-malicious hashes must come from a real threat-intelligence source
+        // via registerKnownMaliciousHash().
     }
 
     public void addRule(SecurityRule rule) {

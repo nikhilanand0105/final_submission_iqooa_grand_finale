@@ -4,7 +4,7 @@ package dev.saathi.kids.ui.model;
  * Child-friendly verdict types for Saathi Kids checking engine.
  */
 public enum CheckVerdict {
-    LOOKS_OKAY("Looks okay from what I can see", "#386B57", "#EAF3ED", "✅"),
+    LOOKS_OKAY("No warning signs found", "#386B57", "#EAF3ED", "✅"),
     BE_CAREFUL("Let's be careful", "#855A12", "#F8F0DF", "⚠️"),
     WARNING_SIGNS("There are warning signs", "#A63232", "#F8EAE8", "🛑"),
     CANNOT_TELL("I can't tell from this alone", "#555555", "#F0F0EE", "ℹ️");
