@@ -14,11 +14,16 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import dev.saathi.ai.ExplanationResult;
+import dev.saathi.ai.ModelLifecycleState;
+import dev.saathi.ai.OnDeviceLanguageModel;
+import dev.saathi.ai.SecurityFindingContext;
 import dev.saathi.personal.R;
 import dev.saathi.personal.ui.model.ChatMessage;
 import dev.saathi.personal.ui.state.AppState;
 
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
@@ -32,7 +37,9 @@ public class AssistantScreenController {
     private LinearLayout containerMessages;
     private ScrollView svChat;
     private EditText etInput;
+    private Button btnSend;
     private Runnable closeCallback;
+    private boolean isGenerating = false;
 
     public AssistantScreenController(Activity activity) {
         this.activity = activity;
@@ -70,13 +77,19 @@ public class AssistantScreenController {
         contentLayout.removeAllViews();
         boolean senior = AppState.get().isSeniorMode();
 
-        // 1. Header & Privacy Badge
+        // 1. Header & Live Model Status
         contentLayout.addView(buildHeader(senior));
 
-        // 2. Suggestion Prompt Pills
-        contentLayout.addView(buildSuggestionPills(senior));
+        // 2. Attached Context Card (if user clicked 'Ask Copilot' from scan result)
+        SecurityFindingContext activeContext = AppState.get().getActiveFindingContext();
+        if (activeContext != null) {
+            contentLayout.addView(buildActiveContextBanner(activeContext, senior));
+        }
 
-        // 3. Chat Messages Stream Container
+        // 3. Suggestion Prompt Pills
+        contentLayout.addView(buildSuggestionPills(activeContext, senior));
+
+        // 4. Chat Messages Stream Container
         svChat = new ScrollView(activity);
         LinearLayout.LayoutParams scp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -102,7 +115,7 @@ public class AssistantScreenController {
         // Auto-scroll to bottom
         svChat.post(() -> svChat.fullScroll(View.FOCUS_DOWN));
 
-        // 4. Input Row
+        // 5. Input Row
         contentLayout.addView(buildInputRow(senior));
     }
 
@@ -126,14 +139,47 @@ public class AssistantScreenController {
         sp.setLayoutParams(new LinearLayout.LayoutParams(0, 1, 1f));
         topRow.addView(sp);
 
+        // Action Buttons: Diagnostics, New Chat, Close
+        Button btnDiag = new Button(activity);
+        btnDiag.setText("🛠️ Diag");
+        btnDiag.setBackgroundResource(R.drawable.bg_pill_dark);
+        btnDiag.setTextColor(0xFF141414);
+        btnDiag.setTextSize(11);
+        btnDiag.setTypeface(null, android.graphics.Typeface.BOLD);
+        LinearLayout.LayoutParams dp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, (int) (34 * density));
+        dp.rightMargin = (int) (6 * density);
+        btnDiag.setLayoutParams(dp);
+        btnDiag.setOnClickListener(v -> dev.saathi.personal.ui.components.AiDiagnosticsDialog.show(activity));
+        topRow.addView(btnDiag);
+
+        Button btnNewChat = new Button(activity);
+        btnNewChat.setText("🔄 New Chat");
+        btnNewChat.setBackgroundResource(R.drawable.bg_pill_dark);
+        btnNewChat.setTextColor(0xFF141414);
+        btnNewChat.setTextSize(11);
+        btnNewChat.setTypeface(null, android.graphics.Typeface.BOLD);
+        LinearLayout.LayoutParams ncp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, (int) (34 * density));
+        ncp.rightMargin = (int) (6 * density);
+        btnNewChat.setLayoutParams(ncp);
+        btnNewChat.setOnClickListener(v -> {
+            AppState.get().getChatMessages().clear();
+            OnDeviceLanguageModel lm = AppState.get().getLanguageModel();
+            if (lm != null) {
+                lm.resetConversation();
+            }
+            render();
+            Toast.makeText(activity, "Conversation reset.", Toast.LENGTH_SHORT).show();
+        });
+        topRow.addView(btnNewChat);
+
         if (closeCallback != null) {
             Button btnClose = new Button(activity);
             btnClose.setText("✕ Close");
             btnClose.setBackgroundResource(R.drawable.bg_pill_dark);
             btnClose.setTextColor(0xFF141414);
-            btnClose.setTextSize(12);
+            btnClose.setTextSize(11);
             btnClose.setTypeface(null, android.graphics.Typeface.BOLD);
-            LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, (int) (36 * density));
+            LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, (int) (34 * density));
             btnClose.setLayoutParams(cp);
             btnClose.setOnClickListener(v -> closeCallback.run());
             topRow.addView(btnClose);
@@ -142,7 +188,7 @@ public class AssistantScreenController {
         header.addView(topRow);
 
         TextView sub = new TextView(activity);
-        sub.setText("Conversational security intelligence running privately on Snapdragon 8 Elite NPU");
+        sub.setText("Conversational security intelligence running privately on Snapdragon 8 Elite");
         sub.setTextSize(senior ? 14 : 13);
         sub.setTextColor(0xFF666666);
         LinearLayout.LayoutParams sp2 = new LinearLayout.LayoutParams(
@@ -153,42 +199,156 @@ public class AssistantScreenController {
         sub.setLayoutParams(sp2);
         header.addView(sub);
 
-        TextView tvPrivacy = new TextView(activity);
-        tvPrivacy.setText("🔒 ZERO CLOUD TELEMETRY • NPU ISOLATED • 100% PRIVATE");
-        tvPrivacy.setTextSize(senior ? 11 : 10);
-        tvPrivacy.setTextColor(0xFF386B57);
-        tvPrivacy.setBackgroundResource(R.drawable.bg_pill_emerald);
-        tvPrivacy.setPadding((int) (10 * density), (int) (5 * density), (int) (10 * density), (int) (5 * density));
-        LinearLayout.LayoutParams pp = new LinearLayout.LayoutParams(
+        // Dynamic Model Status Pill
+        OnDeviceLanguageModel model = AppState.get().getLanguageModel();
+        ModelLifecycleState modelState = model != null ? model.getState() : ModelLifecycleState.MISSING;
+        String backend = model != null ? model.getBackendName() : "Local Rules";
+
+        LinearLayout statusRow = new LinearLayout(activity);
+        statusRow.setOrientation(LinearLayout.HORIZONTAL);
+        statusRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams srp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
         );
-        pp.topMargin = (int) (8 * density);
-        tvPrivacy.setLayoutParams(pp);
-        header.addView(tvPrivacy);
+        srp.topMargin = (int) (8 * density);
+        statusRow.setLayoutParams(srp);
 
+        TextView tvStatus = new TextView(activity);
+        if (modelState == ModelLifecycleState.READY) {
+            tvStatus.setText("🧠 GEMMA 4-E2B-IT ACTIVE (" + backend + ") • 100% PRIVATE");
+            tvStatus.setTextColor(0xFF386B57);
+            tvStatus.setBackgroundResource(R.drawable.bg_pill_emerald);
+        } else if (modelState == ModelLifecycleState.LOADING) {
+            tvStatus.setText("⏳ INITIALIZING GEMMA 4-E2B-IT ON SNAPDRAGON HARDWARE...");
+            tvStatus.setTextColor(0xFFB45309);
+            tvStatus.setBackgroundResource(R.drawable.bg_pill_amber);
+        } else if (model != null && model.getModelPath() != null && !model.getModelPath().isEmpty()) {
+            tvStatus.setText("📦 GEMMA MODEL DETECTED (" + (new java.io.File(model.getModelPath()).length() / (1024 * 1024)) + " MB)");
+            tvStatus.setTextColor(0xFF141414);
+            tvStatus.setBackgroundResource(R.drawable.bg_pill_dark);
+        } else {
+            tvStatus.setText("⚠️ MODEL_UNAVAILABLE (" + modelState.name() + ")");
+            tvStatus.setTextColor(0xFFB91C1C);
+            tvStatus.setBackgroundResource(R.drawable.bg_pill_dark);
+        }
+        tvStatus.setTextSize(senior ? 11 : 10);
+        tvStatus.setPadding((int) (10 * density), (int) (5 * density), (int) (10 * density), (int) (5 * density));
+        statusRow.addView(tvStatus);
+
+        if (modelState != ModelLifecycleState.READY && modelState != ModelLifecycleState.LOADING && model != null) {
+            Button btnInit = new Button(activity);
+            btnInit.setText("⚡ Load Model");
+            btnInit.setTextSize(10);
+            btnInit.setTextColor(0xFF141414);
+            btnInit.setBackgroundResource(R.drawable.bg_pill_amber);
+            LinearLayout.LayoutParams bip = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    (int) (28 * density)
+                    );
+            bip.leftMargin = (int) (8 * density);
+            btnInit.setLayoutParams(bip);
+            btnInit.setOnClickListener(v -> {
+                Toast.makeText(activity, "Loading Gemma on Snapdragon hardware...", Toast.LENGTH_SHORT).show();
+                model.initializeAsync((st, msg) -> activity.runOnUiThread(this::render));
+                render();
+            });
+            statusRow.addView(btnInit);
+        }
+
+        header.addView(statusRow);
         return header;
     }
 
-    private View buildSuggestionPills(boolean senior) {
+    private View buildActiveContextBanner(SecurityFindingContext ctx, boolean senior) {
+        LinearLayout banner = new LinearLayout(activity);
+        banner.setOrientation(LinearLayout.VERTICAL);
+        banner.setBackgroundResource(R.drawable.bg_card_cred);
+        banner.setPadding((int) (14 * density), (int) (10 * density), (int) (14 * density), (int) (10 * density));
+        LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        bp.topMargin = (int) (4 * density);
+        bp.bottomMargin = (int) (6 * density);
+        banner.setLayoutParams(bp);
+
+        LinearLayout topRow = new LinearLayout(activity);
+        topRow.setOrientation(LinearLayout.HORIZONTAL);
+        topRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView tvTitle = new TextView(activity);
+        tvTitle.setText("📌 Attached Finding: " + ctx.getTargetIdentifier() + " [" + ctx.getVerdict().getDisplayName() + "]");
+        tvTitle.setTextSize(senior ? 12 : 11);
+        tvTitle.setTypeface(null, android.graphics.Typeface.BOLD);
+        tvTitle.setTextColor(0xFF141414);
+        topRow.addView(tvTitle);
+
+        View sp = new View(activity);
+        sp.setLayoutParams(new LinearLayout.LayoutParams(0, 1, 1f));
+        topRow.addView(sp);
+
+        Button btnClear = new Button(activity);
+        btnClear.setText("✕ Clear");
+        btnClear.setTextSize(10);
+        btnClear.setTextColor(0xFF888888);
+        btnClear.setBackgroundResource(R.drawable.bg_pill_dark);
+        LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, (int) (26 * density));
+        btnClear.setLayoutParams(cp);
+        btnClear.setOnClickListener(v -> {
+            AppState.get().clearActiveFindingContext();
+            render();
+        });
+        topRow.addView(btnClear);
+        banner.addView(topRow);
+
+        if (!ctx.getRawUntrustedSnippet().isEmpty()) {
+            TextView tvSnippet = new TextView(activity);
+            String snippet = ctx.getRawUntrustedSnippet();
+            if (snippet.length() > 100) {
+                snippet = snippet.substring(0, 97) + "...";
+            }
+            tvSnippet.setText("\"" + snippet + "\"");
+            tvSnippet.setTextSize(11);
+            tvSnippet.setTextColor(0xFF666666);
+            LinearLayout.LayoutParams sp2 = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+            );
+            sp2.topMargin = (int) (4 * density);
+            tvSnippet.setLayoutParams(sp2);
+            banner.addView(tvSnippet);
+        }
+
+        return banner;
+    }
+
+    private View buildSuggestionPills(SecurityFindingContext activeContext, boolean senior) {
         HorizontalScrollView hsv = new HorizontalScrollView(activity);
         hsv.setHorizontalScrollBarEnabled(false);
         LinearLayout.LayoutParams hp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
         );
-        hp.topMargin = (int) (6 * density);
-        hp.bottomMargin = (int) (6 * density);
+        hp.topMargin = (int) (4 * density);
+        hp.bottomMargin = (int) (4 * density);
         hsv.setLayoutParams(hp);
 
         LinearLayout row = new LinearLayout(activity);
         row.setOrientation(LinearLayout.HORIZONTAL);
 
-        row.addView(createSuggestionChip("What is a Trojan APK?", "What is a Trojan APK and why is it dangerous?", senior));
-        row.addView(createSuggestionChip("When to call 1930?", "What is the 1930 National Cyber Helpline and how quickly should I call?", senior));
-        row.addView(createSuggestionChip("Recognize Phishing Links", "How do I recognize fake banking and KYC update links?", senior));
-        row.addView(createSuggestionChip("Is GB WhatsApp safe?", "Is modified WhatsApp or GB WhatsApp safe to install?", senior));
-        row.addView(createSuggestionChip("साइबर सुरक्षा टिप्स", "कृपया मुझे ऑनलाइन फ्रॉड से बचने के ज़रूरी टिप्स बताइए।", senior));
+        if (activeContext != null) {
+            row.addView(createSuggestionChip("Explain this finding", "Please explain why this finding is flagged and how it affects me.", senior));
+            row.addView(createSuggestionChip("Why is it dangerous?", "What specific harm or fraud tactics are involved in this case?", senior));
+            row.addView(createSuggestionChip("What should I do?", "Give me calm, step-by-step practical actions I should take right now.", senior));
+            row.addView(createSuggestionChip("National Helpline 1930", "How and when should I report this to the 1930 Cyber Helpline?", senior));
+        } else {
+            row.addView(createSuggestionChip("What is a Trojan APK?", "What is an Android Banking Trojan APK and why is it dangerous?", senior));
+            row.addView(createSuggestionChip("When to call 1930?", "What is the 1930 National Cyber Helpline and how quickly should I call?", senior));
+            row.addView(createSuggestionChip("Recognize Phishing Links", "How do I recognize fake banking, electricity bill, and KYC update links?", senior));
+            row.addView(createSuggestionChip("Is GB WhatsApp safe?", "Is modified WhatsApp or GB WhatsApp safe to install?", senior));
+            row.addView(createSuggestionChip("साइबर सुरक्षा टिप्स", "कृपया मुझे ऑनलाइन फ्रॉड से बचने के ज़रूरी टिप्स बताइए।", senior));
+        }
 
         hsv.addView(row);
         return hsv;
@@ -233,19 +393,27 @@ public class AssistantScreenController {
         etInput.setLayoutParams(ep);
         row.addView(etInput);
 
-        Button btnSend = new Button(activity);
-        btnSend.setText("Send");
+        btnSend = new Button(activity);
+        btnSend.setText(isGenerating ? "■ Stop" : "Send");
         btnSend.setTextSize(senior ? 14 : 12);
         btnSend.setTextColor(0xFFFFFFFF);
-        btnSend.setBackgroundResource(R.drawable.bg_pill_black);
+        btnSend.setBackgroundResource(isGenerating ? R.drawable.bg_pill_dark : R.drawable.bg_pill_black);
         btnSend.setTypeface(null, android.graphics.Typeface.BOLD);
         LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams((int) (72 * density), (int) (48 * density));
         btnSend.setLayoutParams(bp);
         btnSend.setOnClickListener(v -> {
-            String text = etInput.getText().toString().trim();
-            if (!text.isEmpty()) {
-                etInput.setText("");
-                sendMessage(text);
+            if (isGenerating) {
+                OnDeviceLanguageModel lm = AppState.get().getLanguageModel();
+                if (lm != null) {
+                    lm.cancelInference();
+                }
+                deliverResponse("[Inference stopped by user]");
+            } else {
+                String text = etInput.getText().toString().trim();
+                if (!text.isEmpty()) {
+                    etInput.setText("");
+                    sendMessage(text);
+                }
             }
         });
         row.addView(btnSend);
@@ -273,7 +441,7 @@ public class AssistantScreenController {
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
         );
-        bp.width = (int) (activity.getResources().getDisplayMetrics().widthPixels * 0.75f);
+        bp.width = (int) (activity.getResources().getDisplayMetrics().widthPixels * 0.78f);
         bubble.setLayoutParams(bp);
 
         TextView tvSender = new TextView(activity);
@@ -288,6 +456,7 @@ public class AssistantScreenController {
         tvText.setTextSize(senior ? 15 : 13);
         tvText.setTextColor(msg.isUser ? 0xFFFFFFFF : 0xFF141414);
         tvText.setLineSpacing(0, 1.25f);
+        tvText.setTag("bubble_text");
         LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
@@ -322,59 +491,69 @@ public class AssistantScreenController {
 
     private void sendMessage(String prompt) {
         AppState.get().addChatMessage(new ChatMessage(true, prompt, "You"));
+
+        // Truthful thinking indicator
+        ChatMessage thinkingMsg = new ChatMessage(false, "Saathi is thinking...", "Saathi Safety Copilot");
+        AppState.get().addChatMessage(thinkingMsg);
+
+        isGenerating = true;
         render();
 
-        new Handler(Looper.getMainLooper()).postDelayed(() -> {
-            String answer = generateOnDeviceAnswer(prompt);
-            AppState.get().addChatMessage(new ChatMessage(false, answer, "Saathi Safety Copilot"));
-            render();
-        }, 250);
+        OnDeviceLanguageModel model = AppState.get().getLanguageModel();
+        SecurityFindingContext context = AppState.get().getActiveFindingContext();
+
+        if (model == null) {
+            deliverResponse("⚠️ MODEL_UNAVAILABLE\n\nOn-device model provider is uninitialized.");
+            return;
+        }
+
+        StringBuilder streamBuffer = new StringBuilder();
+
+        model.answerQueryAsync(prompt, context, new OnDeviceLanguageModel.ExplanationCallback() {
+            @Override
+            public void onPartialToken(String tokenChunk) {
+                activity.runOnUiThread(() -> {
+                    streamBuffer.append(tokenChunk);
+                    AppState.get().updateLastAssistantMessage(streamBuffer.toString(), "Saathi Safety Copilot");
+                    updateStreamingBubble(streamBuffer.toString());
+                });
+            }
+
+            @Override
+            public void onSuccess(ExplanationResult result) {
+                activity.runOnUiThread(() -> deliverResponse(result.toFormattedDisplay()));
+            }
+
+            @Override
+            public void onError(Throwable throwable, ExplanationResult fallbackResult) {
+                activity.runOnUiThread(() -> {
+                    String errorText = (fallbackResult != null) ? fallbackResult.toFormattedDisplay() : ("❌ INFERENCE_FAILED: " + (throwable != null ? throwable.getMessage() : "Unknown error"));
+                    deliverResponse(errorText);
+                });
+            }
+        });
     }
 
-    private String generateOnDeviceAnswer(String query) {
-        String lower = query.toLowerCase(Locale.ROOT);
-
-        if (lower.contains("trojan") || lower.contains("apk") || lower.contains("whatsapp")) {
-            return "🛡️ Android Banking Trojans & Modded APKs:\n\n" +
-                    "Fake or modified APKs (like GB WhatsApp or fake banking updates) often bundle malicious DEX payloads. " +
-                    "They abuse Android's BIND_ACCESSIBILITY_SERVICE to read screen contents, inject invisible tap overlays (SYSTEM_ALERT_WINDOW), " +
-                    "and intercept incoming SMS to steal OTPs.\n\n" +
-                    "Saathi inspects these packages statically before installation on your iQOO 15 without ever executing untrusted code.";
+    private void updateStreamingBubble(String text) {
+        if (containerMessages == null || containerMessages.getChildCount() == 0) return;
+        View lastChild = containerMessages.getChildAt(containerMessages.getChildCount() - 1);
+        if (lastChild instanceof LinearLayout) {
+            View bubble = ((LinearLayout) lastChild).getChildAt(0);
+            if (bubble instanceof LinearLayout) {
+                View tv = bubble.findViewWithTag("bubble_text");
+                if (tv instanceof TextView) {
+                    ((TextView) tv).setText(text);
+                }
+            }
         }
-
-        if (lower.contains("link") || lower.contains("phishing") || lower.contains("url") || lower.contains("sbi")) {
-            return "🔗 Phishing & Fraud Link Guidance:\n\n" +
-                    "Banks never send SMS messages with links on domains ending in .top, .xyz, or raw IP addresses.\n" +
-                    "1. Never enter your net banking username, password, or debit card number on unverified links.\n" +
-                    "2. Always type the official bank website directly in Chrome (e.g., https://onlinesbi.sbi).\n" +
-                    "3. If you clicked an unfamiliar link, change your banking password immediately from another device.";
+        if (svChat != null) {
+            svChat.post(() -> svChat.fullScroll(View.FOCUS_DOWN));
         }
+    }
 
-        if (lower.contains("grooming") || lower.contains("child") || lower.contains("secret")) {
-            return "👁️ Child Online Safety & Grooming Detection:\n\n" +
-                    "Groomers manipulate children using 3 consistent psychological cues:\n" +
-                    "1. Isolation / Secrecy: 'Mummy-papa ko mat batana'.\n" +
-                    "2. Platform Hopping: Moving from public gaming chats to private disappearing apps.\n" +
-                    "3. Boundary Erosion: Asking to turn on video cameras or demanding private photos.\n\n" +
-                    "Saathi Sense runs on-device Hinglish NLP to flag these cues immediately without uploading personal chats to the cloud.";
-        }
-
-        if (lower.contains("1930") || lower.contains("helpline") || lower.contains("fraud") || lower.contains("money")) {
-            return "📞 National Cyber Crime Helpline (1930):\n\n" +
-                    "If you or a family member have been tricked into transferring money or sharing an OTP, dial 1930 immediately.\n\n" +
-                    "Under India's Citizen Financial Cyber Fraud Reporting System (CFCFRMS), calls made within the 'Golden Hour' (first 2 hours) allow law enforcement to freeze the fraudster's bank accounts and UPI nodes before funds are withdrawn at ATMs.";
-        }
-
-        if (lower.contains("हिंदी") || lower.contains("hindi") || lower.contains("टिप्स")) {
-            return "🛡️ आवश्यक डिजिटल सुरक्षा सलाह (हिन्दी):\n\n" +
-                    "1. कभी भी किसी अनजान कॉलर के कहने पर कोई ऐप (.apk) डाउनलोड न करें।\n" +
-                    "2. बैंक या बिजली बिल के नाम पर आए अनजान लिंक (SMS) पर क्लिक न करें।\n" +
-                    "3. यदि पैसे कट जाएं, तो तुरंत 1930 पर कॉल करें।\n" +
-                    "4. बच्चों को सिखाएं कि इंटरनेट पर किसी अजनबी से गुप्त बातें या फ़ोटो कभी साझा न करें।";
-        }
-
-        return "Saathi AI Safety Copilot is monitoring your device actively. " +
-                "I analyze APK structures, conversation manipulation cues, and fraudulent bank links in real time on your Snapdragon 8 Elite. " +
-                "Feel free to ask about any specific app, link, or scam message!";
+    private void deliverResponse(String responseText) {
+        isGenerating = false;
+        AppState.get().updateLastAssistantMessage(responseText, "Saathi Safety Copilot");
+        render();
     }
 }

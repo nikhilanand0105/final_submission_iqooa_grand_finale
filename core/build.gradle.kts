@@ -1,6 +1,5 @@
 plugins {
     `java-library`
-    kotlin("jvm")
 }
 
 java {
@@ -9,10 +8,11 @@ java {
 }
 
 dependencies {
-    testImplementation(kotlin("test"))
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
 tasks.withType<Test> {
     useJUnitPlatform()
+    failOnNoDiscoveredTests.set(false)
 }

@@ -3,11 +3,13 @@ package dev.saathi.personal.ui;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
+import android.provider.OpenableColumns;
 import android.view.Display;
 import android.view.View;
 import android.view.WindowManager;
@@ -19,9 +21,15 @@ import android.widget.Toast;
 
 import dev.saathi.model.ApkAnalysisReport;
 import dev.saathi.model.ScanVerdict;
-import dev.saathi.model.ThreatSeverity;
+import dev.saathi.model.ThreatIndicator;
 import dev.saathi.personal.R;
+import dev.saathi.personal.data.DataExfiltrationSentinel;
+import dev.saathi.personal.data.db.FindingRecord;
+import dev.saathi.personal.data.db.ScanRecord;
+import dev.saathi.personal.data.prefs.PreferencesManager;
+import dev.saathi.personal.ui.components.DataExfiltrationDialog;
 import dev.saathi.personal.ui.components.DetailSheetDialog;
+import dev.saathi.personal.ui.components.OnboardingOverlay;
 import dev.saathi.personal.ui.model.ActivityEvent;
 import dev.saathi.personal.ui.model.NavigationTab;
 import dev.saathi.personal.ui.screens.ActivityScreenController;
@@ -34,7 +42,7 @@ import dev.saathi.personal.ui.state.AppState;
 
 import java.io.InputStream;
 import java.util.ArrayDeque;
-import java.util.Date;
+import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 
@@ -96,21 +104,63 @@ public class MainActivity extends Activity {
 
         vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
 
-        // Initialize persistent preferences in AppState
+        // Initialize persistent preferences and repository in AppState
         AppState.get().initContext(this);
 
         initViews();
         setupScreenControllers();
         setupNavigation();
 
+        // Check if onboarding needs to be displayed
+        checkOnboarding();
+
         // Listen for centralized state changes
         AppState.get().addListener(this::onAppStateChanged);
+        dev.saathi.personal.network.NetworkProtectionManager.getInstance(this)
+                .addListener(this::onNetworkProtectionStatusChanged);
 
-        // Check incoming intent (APK shared from Chrome, WhatsApp, Files)
-        handleIncomingIntent(getIntent());
+        // Data Exfiltration Sentinel & TeraBox Foreground Watcher
+        DataExfiltrationSentinel sentinel = DataExfiltrationSentinel.getInstance(this);
+        if (sentinel.getState() == DataExfiltrationSentinel.SentinelState.AWAITING_CONFIRMATION) {
+            sentinel.postSystemNotification(this);
+        }
+        sentinel.addListener(state -> runOnUiThread(() -> {
+            if (homeController != null) {
+                homeController.render();
+            }
+        }));
+        dev.saathi.personal.data.TeraBoxLaunchWatcher.getInstance(this).startMonitoring();
 
         // Initial tab
         switchTab(NavigationTab.HOME, false);
+
+        // Check incoming intent (APK shared from Chrome, WhatsApp, Files, or Sentinel notification)
+        handleIncomingIntent(getIntent());
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        dev.saathi.personal.data.TeraBoxLaunchWatcher.getInstance(this).startMonitoring();
+        if (homeController != null) {
+            homeController.render();
+        }
+    }
+
+    private void checkOnboarding() {
+        PreferencesManager prefs = AppState.get().getPreferencesManager();
+        if (prefs != null && !prefs.isOnboardingCompleted()) {
+            onboardingContainer.removeAllViews();
+            OnboardingOverlay overlay = new OnboardingOverlay(this, () -> {
+                prefs.setOnboardingCompleted(true);
+                onboardingContainer.setVisibility(View.GONE);
+                onboardingContainer.removeAllViews();
+            });
+            onboardingContainer.addView(overlay.getView());
+            onboardingContainer.setVisibility(View.VISIBLE);
+        } else {
+            onboardingContainer.setVisibility(View.GONE);
+        }
     }
 
     private void optimizeDisplayForIqoo15() {
@@ -300,34 +350,148 @@ public class MainActivity extends Activity {
         }
     }
 
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == 2001 && resultCode == RESULT_OK && data != null) {
+            Uri uri = data.getData();
+            if (uri != null) {
+                processSelectedApkUri(uri);
+            }
+        } else if (requestCode == dev.saathi.personal.network.NetworkProtectionManager.REQUEST_CODE_VPN_CONSENT) {
+            dev.saathi.personal.network.NetworkProtectionManager npm =
+                    dev.saathi.personal.network.NetworkProtectionManager.getInstance(this);
+            if (resultCode == RESULT_OK) {
+                npm.startProtection(this);
+                Toast.makeText(this, "Network Protection enabled. On-device DNS firewall active.", Toast.LENGTH_SHORT).show();
+            } else {
+                npm.onPermissionDenied();
+                Toast.makeText(this, "VPN permission denied. Protection cannot start without system consent.", Toast.LENGTH_LONG).show();
+            }
+            if (homeController != null) {
+                homeController.render();
+            }
+            if (settingsController != null) {
+                settingsController.render();
+            }
+        }
+    }
+
+    private void processSelectedApkUri(Uri uri) {
+        if (uri == null) return;
+        switchTab(NavigationTab.SCAN, true);
+        if (scanController != null) {
+            scanController.analyzeSelectedApkUri(uri);
+        }
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleIncomingIntent(intent);
+    }
+
     private void handleIncomingIntent(Intent intent) {
         if (intent == null) return;
         String action = intent.getAction();
         Uri data = intent.getData();
 
+        if (DataExfiltrationSentinel.ACTION_SENTINEL_BLOCK.equals(action)) {
+            DataExfiltrationSentinel.getInstance(this).confirmUpload(this, false);
+            Toast.makeText(this, "🛡️ TeraBox background upload BLOCKED! 0 bytes leaked.", Toast.LENGTH_LONG).show();
+            switchTab(NavigationTab.HOME, false);
+            return;
+        } else if (DataExfiltrationSentinel.ACTION_SENTINEL_ALLOW.equals(action)) {
+            DataExfiltrationSentinel.getInstance(this).confirmUpload(this, true);
+            Toast.makeText(this, "✅ TeraBox upload permitted by user.", Toast.LENGTH_SHORT).show();
+            switchTab(NavigationTab.HOME, false);
+            return;
+        } else if (DataExfiltrationSentinel.ACTION_SENTINEL_PROMPT.equals(action)) {
+            switchTab(NavigationTab.HOME, false);
+            DataExfiltrationDialog.show(this, () -> {
+                if (homeController != null) homeController.render();
+            });
+            return;
+        } else if ("dev.saathi.personal.ACTION_TEST_TERABOX".equals(action)) {
+            switchTab(NavigationTab.HOME, false);
+            dev.saathi.personal.data.TeraBoxLaunchWatcher.getInstance(this).triggerSentinelScan();
+            return;
+        } else if ("dev.saathi.personal.ACTION_LAUNCH_TERABOX".equals(action)) {
+            dev.saathi.personal.data.TeraBoxLaunchWatcher.launchTeraBox(this);
+            return;
+        }
+
         if (Intent.ACTION_VIEW.equals(action) && data != null) {
-            try {
-                InputStream is = getContentResolver().openInputStream(data);
-                if (is != null) {
-                    ApkAnalysisReport report = AppState.get().getApkEngine().analyzeApk("downloaded_package.apk", is, 0);
-
-                    ActivityEvent event = new ActivityEvent(
-                            "evt-" + System.currentTimeMillis(),
-                            new Date(),
-                            ActivityEvent.EventCategory.APK,
-                            report.getVerdict() == ScanVerdict.KNOWN_MALICIOUS ? ThreatSeverity.CRITICAL : ThreatSeverity.INFO,
-                            (report.getVerdict() == ScanVerdict.KNOWN_MALICIOUS ? "🚨 Intercepted Trojan APK: " : "✅ Clean APK Verified: ") + report.getFileName(),
-                            report.getPlainLanguageExplanation(),
-                            List.of("Verdict: " + report.getVerdict().getDisplayName(), "SHA256: " + report.getSha256Checksum()),
-                            report.canSafelyProceedWithInstall() ? "Proceed with Install" : "Quarantine & Delete"
-                    );
-
-                    AppState.get().addActivityEvent(event);
-                    DetailSheetDialog.showEventDetails(this, event);
-                }
-            } catch (Exception e) {
-                Toast.makeText(this, "Could not open APK: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+            processSelectedApkUri(data);
+        } else if (Intent.ACTION_SEND.equals(action)) {
+            Uri streamUri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+            if (streamUri != null) {
+                processSelectedApkUri(streamUri);
             }
         }
+    }
+
+    private void recordAndDisplayApkReport(ApkAnalysisReport report) {
+        String scanId = "scan-" + System.currentTimeMillis();
+        String verdict = report.getVerdict() == ScanVerdict.KNOWN_MALICIOUS ? "KNOWN_MALICIOUS" :
+                (report.getVerdict() == ScanVerdict.HIGH_RISK || report.getVerdict() == ScanVerdict.CAUTION ? "SUSPICIOUS" : "SAFE");
+        String severity = report.getVerdict() == ScanVerdict.KNOWN_MALICIOUS ? "CRITICAL" :
+                (report.getVerdict() == ScanVerdict.HIGH_RISK ? "HIGH" :
+                (report.getVerdict() == ScanVerdict.CAUTION ? "MEDIUM" : "INFO"));
+
+        ScanRecord scan = new ScanRecord(
+                scanId,
+                "APK",
+                System.currentTimeMillis(),
+                "COMPLETED",
+                report.getPlainLanguageExplanation(),
+                report.getFileName(),
+                "1.0.0",
+                true,
+                verdict,
+                severity,
+                report.canSafelyProceedWithInstall() ? "Proceed with Install" : "Quarantine & Delete"
+        );
+
+        List<FindingRecord> findings = new ArrayList<>();
+        if (report.getIndicators() != null) {
+            int fIdx = 1;
+            String recAction = (report.getRecommendedActions() != null && !report.getRecommendedActions().isEmpty())
+                    ? report.getRecommendedActions().get(0)
+                    : (report.canSafelyProceedWithInstall() ? "Safe to proceed" : "Quarantine application");
+            for (ThreatIndicator ti : report.getIndicators()) {
+                findings.add(new FindingRecord(
+                        scanId + "-f" + (fIdx++),
+                        scanId,
+                        ti.getCategory() != null ? ti.getCategory() : ti.getTitle(),
+                        ti.getSeverity().name(),
+                        ti.getTitle() + ": " + ti.getDescription(),
+                        recAction
+                ));
+            }
+        }
+
+        AppState.get().recordScan(scan, findings);
+        ActivityEvent event = AppState.mapScanRecordToActivityEvent(scan, findings);
+        DetailSheetDialog.showEventDetails(this, event);
+    }
+
+    private void onNetworkProtectionStatusChanged(dev.saathi.personal.network.NetworkProtectionStatus status) {
+        runOnUiThread(() -> {
+            if (homeController != null) {
+                homeController.render();
+            }
+            if (settingsController != null) {
+                settingsController.render();
+            }
+        });
+    }
+
+    @Override
+    protected void onDestroy() {
+        dev.saathi.personal.network.NetworkProtectionManager.getInstance(this)
+                .removeListener(this::onNetworkProtectionStatusChanged);
+        super.onDestroy();
     }
 }

@@ -82,17 +82,25 @@ public class BinaryXmlDecoder {
                     currentTag = tagName;
 
                     Map<String, String> attributes = new HashMap<>();
-                    buffer.position(chunkDataStart - 8 + attrStart);
+                    buffer.position(chunkDataStart - 8 + headerSize + attrStart);
 
                     for (int i = 0; i < attrCount; i++) {
                         int attrUri = buffer.getInt();
                         int attrNameIdx = buffer.getInt();
                         int attrValueStringIdx = buffer.getInt();
-                        int attrType = buffer.getInt();
+                        int attrType = (buffer.getInt() >> 24) & 0xFF;
                         int attrData = buffer.getInt();
 
                         String attrName = getString(stringPool, attrNameIdx);
-                        String attrVal = attrValueStringIdx >= 0 ? getString(stringPool, attrValueStringIdx) : String.valueOf(attrData);
+                        String attrVal = null;
+                        if (attrValueStringIdx >= 0) {
+                            attrVal = getString(stringPool, attrValueStringIdx);
+                        } else if (attrType == 3 && attrData >= 0) {
+                            attrVal = getString(stringPool, attrData);
+                        } else {
+                            attrVal = String.valueOf(attrData);
+                        }
+
                         if (attrName != null && attrVal != null) {
                             attributes.put(attrName, attrVal);
                         }
@@ -101,6 +109,16 @@ public class BinaryXmlDecoder {
                     if ("manifest".equalsIgnoreCase(tagName)) {
                         if (attributes.containsKey("package")) packageName = attributes.get("package");
                         if (attributes.containsKey("versionName")) versionName = attributes.get("versionName");
+                        if (attributes.containsKey("versionCode")) {
+                            try { versionCode = Integer.parseInt(attributes.get("versionCode")); } catch (Exception ignored) {}
+                        }
+                    } else if ("uses-sdk".equalsIgnoreCase(tagName)) {
+                        if (attributes.containsKey("minSdkVersion")) {
+                            try { minSdk = Integer.parseInt(attributes.get("minSdkVersion")); } catch (Exception ignored) {}
+                        }
+                        if (attributes.containsKey("targetSdkVersion")) {
+                            try { targetSdk = Integer.parseInt(attributes.get("targetSdkVersion")); } catch (Exception ignored) {}
+                        }
                     } else if ("uses-permission".equalsIgnoreCase(tagName)) {
                         String perm = attributes.get("name");
                         if (perm != null) requestedPermissions.add(perm);

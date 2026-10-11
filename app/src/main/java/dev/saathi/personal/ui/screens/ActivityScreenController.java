@@ -1,6 +1,7 @@
 package dev.saathi.personal.ui.screens;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.view.Gravity;
@@ -12,9 +13,12 @@ import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import dev.saathi.model.ThreatSeverity;
 import dev.saathi.personal.R;
+import dev.saathi.personal.data.db.ScanRecord;
+import dev.saathi.personal.data.db.SecurityAuditRepository;
 import dev.saathi.personal.ui.components.DetailSheetDialog;
 import dev.saathi.personal.ui.model.ActivityEvent;
 import dev.saathi.personal.ui.state.AppState;
@@ -33,10 +37,13 @@ public class ActivityScreenController {
     private EditText etSearch;
     private LinearLayout containerChips;
     private LinearLayout containerEventsList;
-    private TextView tvEmptyState;
+    private LinearLayout emptyStateContainer;
+    private TextView tvEmptyTitle;
+    private TextView tvEmptySubtitle;
 
     private String currentSearchQuery = "";
-    private ActivityEvent.EventCategory selectedCategoryFilter = null; // null = ALL
+    private String selectedOperationType = null; // null = ALL, "MESSAGE", "LINK", "APK", "PERMISSION_AUDIT"
+    private List<ScanRecord> cachedScans = new ArrayList<>();
 
     public ActivityScreenController(Activity activity) {
         this.activity = activity;
@@ -61,13 +68,23 @@ public class ActivityScreenController {
         layout.setOrientation(LinearLayout.VERTICAL);
         layout.setPadding((int) (20 * density), (int) (16 * density), (int) (20 * density), (int) (100 * density));
 
-        // 1. Header
+        // 1. Header with Clear History button
+        LinearLayout headerRow = new LinearLayout(activity);
+        headerRow.setOrientation(LinearLayout.HORIZONTAL);
+        headerRow.setGravity(Gravity.CENTER_VERTICAL);
+        headerRow.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        LinearLayout titleCol = new LinearLayout(activity);
+        titleCol.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams tcp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        titleCol.setLayoutParams(tcp);
+
         TextView title = new TextView(activity);
         title.setText("SECURITY AUDIT & ACTIVITY");
         title.setTextSize(22);
         title.setTextColor(0xFF141414);
         title.setTypeface(null, android.graphics.Typeface.BOLD);
-        layout.addView(title);
+        titleCol.addView(title);
 
         TextView sub = new TextView(activity);
         sub.setText("Chronological forensic telemetry and threat interceptions stored locally on-device");
@@ -78,9 +95,27 @@ public class ActivityScreenController {
                 ViewGroup.LayoutParams.WRAP_CONTENT
         );
         sp.topMargin = (int) (4 * density);
-        sp.bottomMargin = (int) (16 * density);
         sub.setLayoutParams(sp);
-        layout.addView(sub);
+        titleCol.addView(sub);
+
+        headerRow.addView(titleCol);
+
+        // Clear History button
+        Button btnClear = new Button(activity);
+        btnClear.setText("Clear");
+        btnClear.setTextSize(12);
+        btnClear.setTextColor(0xFF888888);
+        btnClear.setBackgroundResource(R.drawable.bg_pill_dark);
+        btnClear.setPadding((int) (12 * density), 0, (int) (12 * density), 0);
+        LinearLayout.LayoutParams cbParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                (int) (36 * density)
+        );
+        btnClear.setLayoutParams(cbParams);
+        btnClear.setOnClickListener(v -> confirmClearHistory());
+        headerRow.addView(btnClear);
+
+        layout.addView(headerRow);
 
         // 2. Search Bar
         etSearch = new EditText(activity);
@@ -90,6 +125,12 @@ public class ActivityScreenController {
         etSearch.setTextSize(13);
         etSearch.setBackgroundResource(R.drawable.bg_input_field);
         etSearch.setPadding((int) (16 * density), (int) (12 * density), (int) (16 * density), (int) (12 * density));
+        LinearLayout.LayoutParams searchParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        searchParams.topMargin = (int) (14 * density);
+        etSearch.setLayoutParams(searchParams);
         etSearch.addTextChangedListener(new TextWatcher() {
             @Override
             public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
@@ -97,7 +138,7 @@ public class ActivityScreenController {
             @Override
             public void onTextChanged(CharSequence s, int start, int before, int count) {
                 currentSearchQuery = s.toString().trim().toLowerCase(Locale.ROOT);
-                render();
+                applyFilterAndRender();
             }
 
             @Override
@@ -128,16 +169,41 @@ public class ActivityScreenController {
         containerEventsList.setOrientation(LinearLayout.VERTICAL);
         layout.addView(containerEventsList);
 
-        // 5. Empty State
-        tvEmptyState = new TextView(activity);
-        tvEmptyState.setText("✅ NO MATCHING SECURITY EVENTS\nAll monitored vectors are safe and nominal.");
-        tvEmptyState.setGravity(Gravity.CENTER);
-        tvEmptyState.setTextSize(14);
-        tvEmptyState.setTextColor(0xFF888888);
-        tvEmptyState.setLineSpacing(0, 1.3f);
-        tvEmptyState.setPadding(0, (int) (40 * density), 0, (int) (40 * density));
-        tvEmptyState.setVisibility(View.GONE);
-        layout.addView(tvEmptyState);
+        // 5. Honest Empty State Container
+        emptyStateContainer = new LinearLayout(activity);
+        emptyStateContainer.setOrientation(LinearLayout.VERTICAL);
+        emptyStateContainer.setGravity(Gravity.CENTER);
+        emptyStateContainer.setPadding(0, (int) (48 * density), 0, (int) (48 * density));
+        emptyStateContainer.setVisibility(View.GONE);
+
+        TextView emptyIcon = new TextView(activity);
+        emptyIcon.setText("🛡️");
+        emptyIcon.setTextSize(36);
+        emptyIcon.setGravity(Gravity.CENTER);
+        emptyStateContainer.addView(emptyIcon);
+
+        tvEmptyTitle = new TextView(activity);
+        tvEmptyTitle.setText("No activity recorded yet.");
+        tvEmptyTitle.setTextSize(16);
+        tvEmptyTitle.setTextColor(0xFF141414);
+        tvEmptyTitle.setTypeface(null, android.graphics.Typeface.BOLD);
+        tvEmptyTitle.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams etp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        etp.topMargin = (int) (8 * density);
+        tvEmptyTitle.setLayoutParams(etp);
+        emptyStateContainer.addView(tvEmptyTitle);
+
+        tvEmptySubtitle = new TextView(activity);
+        tvEmptySubtitle.setText("Run security scans from the Scan tab to populate your persistent local audit ledger.");
+        tvEmptySubtitle.setTextSize(13);
+        tvEmptySubtitle.setTextColor(0xFF888888);
+        tvEmptySubtitle.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams esp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        esp.topMargin = (int) (4 * density);
+        tvEmptySubtitle.setLayoutParams(esp);
+        emptyStateContainer.addView(tvEmptySubtitle);
+
+        layout.addView(emptyStateContainer);
 
         rootView.addView(layout);
         render();
@@ -147,17 +213,18 @@ public class ActivityScreenController {
         containerChips.removeAllViews();
 
         containerChips.addView(createFilterChip("ALL", null));
-        containerChips.addView(createFilterChip("MESSAGES", ActivityEvent.EventCategory.SENSE));
-        containerChips.addView(createFilterChip("LINKS", ActivityEvent.EventCategory.PHISHING));
-        containerChips.addView(createFilterChip("FILES / APKS", ActivityEvent.EventCategory.APK));
-        containerChips.addView(createFilterChip("DEVICE", ActivityEvent.EventCategory.FIREWALL));
+        containerChips.addView(createFilterChip("MESSAGES", "MESSAGE"));
+        containerChips.addView(createFilterChip("LINKS", "LINK"));
+        containerChips.addView(createFilterChip("FILES / APKS", "APK"));
+        containerChips.addView(createFilterChip("DEVICE", "PERMISSION_AUDIT"));
     }
 
-    private Button createFilterChip(String label, ActivityEvent.EventCategory category) {
+    private Button createFilterChip(String label, String opType) {
         Button chip = new Button(activity);
         chip.setText(label);
         chip.setTextSize(11);
-        boolean isSelected = (selectedCategoryFilter == category);
+        boolean isSelected = (selectedOperationType == null && opType == null) ||
+                (selectedOperationType != null && selectedOperationType.equals(opType));
 
         if (isSelected) {
             chip.setTextColor(0xFFFFFFFF);
@@ -169,9 +236,9 @@ public class ActivityScreenController {
         }
 
         chip.setOnClickListener(v -> {
-            selectedCategoryFilter = category;
+            selectedOperationType = opType;
             buildChips();
-            render();
+            loadRecordsFromRepository();
         });
 
         LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(
@@ -184,33 +251,60 @@ public class ActivityScreenController {
     }
 
     public void render() {
+        loadRecordsFromRepository();
+    }
+
+    private void loadRecordsFromRepository() {
+        SecurityAuditRepository repo = AppState.get().getAuditRepository();
+        if (repo != null) {
+            if (selectedOperationType == null) {
+                repo.getAllScans(records -> {
+                    this.cachedScans = records != null ? records : new ArrayList<>();
+                    applyFilterAndRender();
+                });
+            } else {
+                repo.getScansByType(selectedOperationType, records -> {
+                    this.cachedScans = records != null ? records : new ArrayList<>();
+                    applyFilterAndRender();
+                });
+            }
+        } else {
+            applyFilterAndRender();
+        }
+    }
+
+    private void applyFilterAndRender() {
         containerEventsList.removeAllViews();
         boolean senior = AppState.get().isSeniorMode();
-        List<ActivityEvent> allEvents = AppState.get().getActivityEvents();
-        List<ActivityEvent> filtered = new ArrayList<>();
+        List<ScanRecord> filtered = new ArrayList<>();
 
-        for (ActivityEvent ev : allEvents) {
-            // Category filter
-            if (selectedCategoryFilter != null && ev.getCategory() != selectedCategoryFilter) {
-                continue;
-            }
-            // Search text filter
+        for (ScanRecord scan : cachedScans) {
+            // Text search query filter
             if (!currentSearchQuery.isEmpty()) {
-                String title = ev.getTitle().toLowerCase(Locale.ROOT);
-                String sum = ev.getSummary().toLowerCase(Locale.ROOT);
-                if (!title.contains(currentSearchQuery) && !sum.contains(currentSearchQuery)) {
+                String source = scan.getSource().toLowerCase(Locale.ROOT);
+                String summary = scan.getSummary().toLowerCase(Locale.ROOT);
+                String verdict = scan.getVerdict().toLowerCase(Locale.ROOT);
+                if (!source.contains(currentSearchQuery) && !summary.contains(currentSearchQuery) && !verdict.contains(currentSearchQuery)) {
                     continue;
                 }
             }
-            filtered.add(ev);
+            filtered.add(scan);
         }
 
         if (filtered.isEmpty()) {
-            tvEmptyState.setVisibility(View.VISIBLE);
+            emptyStateContainer.setVisibility(View.VISIBLE);
+            if (!currentSearchQuery.isEmpty() || selectedOperationType != null) {
+                tvEmptyTitle.setText("No matching security events");
+                tvEmptySubtitle.setText("Try adjusting your search query or category filter.");
+            } else {
+                tvEmptyTitle.setText("No activity recorded yet.");
+                tvEmptySubtitle.setText("Run security scans from the Scan tab to populate your persistent local audit ledger.");
+            }
         } else {
-            tvEmptyState.setVisibility(View.GONE);
-            for (ActivityEvent ev : filtered) {
-                containerEventsList.addView(createEventCard(ev, senior));
+            emptyStateContainer.setVisibility(View.GONE);
+            for (ScanRecord scan : filtered) {
+                ActivityEvent event = AppState.mapScanRecordToActivityEvent(scan, null);
+                containerEventsList.addView(createEventCard(event, senior));
             }
         }
     }
@@ -319,5 +413,19 @@ public class ActivityScreenController {
         card.addView(tvAction);
 
         return card;
+    }
+
+    private void confirmClearHistory() {
+        new AlertDialog.Builder(activity)
+                .setTitle("Clear Audit History")
+                .setMessage("Are you sure you want to prune and clear all security audit records from on-device local storage?")
+                .setPositiveButton("Clear All", (dialog, which) -> {
+                    AppState.get().clearLocalAuditCache(() -> {
+                        Toast.makeText(activity, "Local security audit records cleared.", Toast.LENGTH_SHORT).show();
+                        render();
+                    });
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
     }
 }

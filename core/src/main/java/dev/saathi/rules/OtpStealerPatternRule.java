@@ -33,6 +33,9 @@ public class OtpStealerPatternRule implements SecurityRule {
             List<String> hiddenPayloads) {
 
         List<ThreatIndicator> indicators = new ArrayList<>();
+        if (WhatsAppModRule.isOfficialWhatsApp(manifest, certificate)) {
+            return indicators;
+        }
 
         boolean readsSms = manifest.hasPermission("android.permission.READ_SMS") ||
                 manifest.hasPermission("android.permission.RECEIVE_SMS");

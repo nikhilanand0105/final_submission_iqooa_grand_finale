@@ -1,10 +1,13 @@
 package dev.saathi.personal.ui.state;
 
 import android.content.Context;
-import android.content.SharedPreferences;
 
 import dev.saathi.engine.SaathiApkIntelligence;
 import dev.saathi.model.ThreatSeverity;
+import dev.saathi.personal.data.db.FindingRecord;
+import dev.saathi.personal.data.db.ScanRecord;
+import dev.saathi.personal.data.db.SecurityAuditRepository;
+import dev.saathi.personal.data.prefs.PreferencesManager;
 import dev.saathi.personal.ui.model.ActivityEvent;
 import dev.saathi.personal.ui.model.ChatMessage;
 import dev.saathi.personal.ui.model.ChildProfile;
@@ -15,18 +18,19 @@ import dev.saathi.personal.ui.model.ScanMode;
 import dev.saathi.sense.SaathiSenseEngine;
 import dev.saathi.shield.network.LocalFirewallEngine;
 import dev.saathi.shield.network.PhishingUrlScanner;
+import dev.saathi.shield.message.MessageRiskAnalyzer;
+import dev.saathi.shield.message.RuleBasedMessageRiskAnalyzer;
+import dev.saathi.ai.OnDeviceLanguageModel;
+import dev.saathi.ai.SecurityFindingContext;
+import dev.saathi.personal.ai.LiteRtLmAndroidModel;
+import dev.saathi.family.FamilyRepository;
+import dev.saathi.personal.data.family.FirebaseFamilyRepository;
 import dev.saathi.storage.LocalStorageRepository;
 import dev.saathi.storage.TrustedHelper;
 
 import java.util.*;
 
 public class AppState {
-
-    private static final String PREF_NAME = "saathi_personal_prefs";
-    private static final String KEY_SENIOR_MODE = "pref_senior_mode";
-    private static final String KEY_LARGE_TEXT = "pref_large_text";
-    private static final String KEY_HIGH_CONTRAST = "pref_high_contrast";
-    private static final String KEY_HINDI = "pref_hindi";
 
     private static AppState instance;
 
@@ -37,12 +41,17 @@ public class AppState {
         return instance;
     }
 
-    private SharedPreferences preferences;
+    private PreferencesManager preferencesManager;
+    private SecurityAuditRepository auditRepository;
+    private OnDeviceLanguageModel languageModel;
+    private SecurityFindingContext activeFindingContext;
 
     private final SaathiApkIntelligence apkEngine;
     private final SaathiSenseEngine senseEngine;
+    private final MessageRiskAnalyzer messageRiskAnalyzer;
     private final PhishingUrlScanner phishingScanner;
     private final LocalFirewallEngine firewallEngine;
+    private final FamilyRepository familyRepository;
     private final LocalStorageRepository storageRepository;
 
     private ChildProfile currentProfile = ChildProfile.AARAV;
@@ -67,8 +76,10 @@ public class AppState {
     private AppState() {
         this.apkEngine = new SaathiApkIntelligence();
         this.senseEngine = new SaathiSenseEngine();
+        this.messageRiskAnalyzer = new RuleBasedMessageRiskAnalyzer();
         this.phishingScanner = new PhishingUrlScanner();
         this.firewallEngine = new LocalFirewallEngine();
+        this.familyRepository = new FirebaseFamilyRepository();
         this.storageRepository = new LocalStorageRepository();
 
         // Seed initial trusted helpers
@@ -100,81 +111,169 @@ public class AppState {
                 "Marked as phishing, no payment made"
         ));
 
-        // Seed initial activity events
-        seedInitialActivityEvents();
+        // Note: Production activityEvents start with an honest empty state!
+        // No mock hardcoded events seeded here.
 
         // Seed initial assistant greeting
         seedInitialChatMessages();
     }
 
     public void initContext(Context context) {
-        if (context == null || preferences != null) return;
-        preferences = context.getApplicationContext().getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
-        isSeniorMode = preferences.getBoolean(KEY_SENIOR_MODE, false);
-        isLargeText = preferences.getBoolean(KEY_LARGE_TEXT, false);
-        isHighContrast = preferences.getBoolean(KEY_HIGH_CONTRAST, false);
-        isHindi = preferences.getBoolean(KEY_HINDI, false);
+        if (context == null || preferencesManager != null) return;
+        Context appCtx = context.getApplicationContext();
+        preferencesManager = PreferencesManager.getInstance(appCtx);
+        auditRepository = SecurityAuditRepository.getInstance(appCtx);
+
+        isSeniorMode = preferencesManager.isSeniorMode();
+        isLargeText = preferencesManager.isLargeText();
+        isHighContrast = preferencesManager.isHighContrast();
+        isHindi = preferencesManager.isHindi();
+        currentProfile = preferencesManager.getCurrentProfile();
+
+        // Initialize on-device language model provider (LiteRT-LM Gemma)
+        if (languageModel == null) {
+            languageModel = new LiteRtLmAndroidModel(appCtx);
+            languageModel.initializeAsync((st, msg) -> notifyListeners());
+        }
+
+        // Refresh activity events from the local SQLite repository
+        refreshActivityFromRepository();
     }
 
-    private void seedInitialActivityEvents() {
-        activityEvents.add(new ActivityEvent(
-                "evt-101",
-                new Date(System.currentTimeMillis() - 1000 * 60 * 25), // 25 mins ago
-                ActivityEvent.EventCategory.APK,
-                ThreatSeverity.CRITICAL,
-                "Malicious Sideload Blocked: GB_WhatsApp_v19.apk",
-                "App requested BIND_ACCESSIBILITY_SERVICE and SMS reading. Neutralized before installation.",
-                List.of(
-                        "DEX Hook: findAccessibilityNodeInfosByViewId",
-                        "Permissions: RECEIVE_SMS, SYSTEM_ALERT_WINDOW",
-                        "Certificate: Untrusted Self-Signed Debug Key"
-                ),
-                "View Forensic Evidence"
-        ));
+    public OnDeviceLanguageModel getLanguageModel() {
+        return languageModel;
+    }
 
-        activityEvents.add(new ActivityEvent(
-                "evt-102",
-                new Date(System.currentTimeMillis() - 1000 * 60 * 85), // 85 mins ago
-                ActivityEvent.EventCategory.SENSE,
-                ThreatSeverity.HIGH,
-                "Secrecy & Isolation Coercion Flagged in Chat",
-                "Stranger messaged: 'Video call pe aa ja, kisi ko mat batana'. Sense flagged isolation cue.",
-                List.of(
-                        "Category: GROOMING_MANIPULATION",
-                        "Matched Linguistic Patterns: 'kisi ko mat batana', 'camera on kar'",
-                        "Recommendation: Advised child not to share images & informed family"
-                ),
-                "Review Conversation Excerpt"
-        ));
+    public SecurityFindingContext getActiveFindingContext() {
+        return activeFindingContext;
+    }
 
-        activityEvents.add(new ActivityEvent(
-                "evt-103",
-                new Date(System.currentTimeMillis() - 1000 * 60 * 240), // 4 hrs ago
-                ActivityEvent.EventCategory.PHISHING,
-                ThreatSeverity.HIGH,
-                "Fake SBI KYC Update Link Neutralized",
-                "Received SMS with link: http://sbi-kyc-verify.top. Credential harvesting phishing kit identified.",
-                List.of(
-                        "Domain: sbi-kyc-verify.top",
-                        "High-Risk TLD: .top (Common disposable phishing host)",
-                        "Lure: Banking KYC suspension impersonation"
-                ),
-                "Block & Report Link"
-        ));
+    public void setActiveFindingContext(SecurityFindingContext context) {
+        this.activeFindingContext = context;
+        notifyListeners();
+    }
 
-        activityEvents.add(new ActivityEvent(
-                "evt-104",
-                new Date(System.currentTimeMillis() - 1000 * 60 * 600), // 10 hrs ago
-                ActivityEvent.EventCategory.FIREWALL,
-                ThreatSeverity.INFO,
-                "Local DNS Firewall Blocked 14 Ad/Tracker Requests",
-                "Background telemetry to known user-tracking endpoints blocked without cloud relaying.",
-                List.of(
-                        "Destinations: telemetry-ads.tracking-network.com, analytics-leak.net",
-                        "Zero battery drain: Snapdragon 8 Elite hardware-accelerated rule table"
-                ),
-                "View Firewall Log"
-        ));
+    public void clearActiveFindingContext() {
+        this.activeFindingContext = null;
+        notifyListeners();
+    }
+
+    public PreferencesManager getPreferencesManager() {
+        return preferencesManager;
+    }
+
+    public SecurityAuditRepository getAuditRepository() {
+        return auditRepository;
+    }
+
+    public void refreshActivityFromRepository() {
+        if (auditRepository != null) {
+            auditRepository.getAllScans(records -> {
+                activityEvents.clear();
+                if (records != null) {
+                    for (ScanRecord scan : records) {
+                        activityEvents.add(mapScanRecordToActivityEvent(scan, null));
+                    }
+                }
+                notifyListeners();
+            });
+        } else {
+            notifyListeners();
+        }
+    }
+
+    public void recordScan(ScanRecord scan, List<FindingRecord> findings) {
+        if (scan == null) return;
+        if (auditRepository != null) {
+            auditRepository.insertScan(scan, findings, v -> refreshActivityFromRepository());
+        } else {
+            activityEvents.add(0, mapScanRecordToActivityEvent(scan, findings));
+            notifyListeners();
+        }
+    }
+
+    public void clearLocalAuditCache(Runnable onComplete) {
+        if (auditRepository != null) {
+            auditRepository.clearAllScans(v -> {
+                activityEvents.clear();
+                notifyListeners();
+                if (onComplete != null) onComplete.run();
+            });
+        } else {
+            activityEvents.clear();
+            notifyListeners();
+            if (onComplete != null) onComplete.run();
+        }
+    }
+
+    public static ActivityEvent mapScanRecordToActivityEvent(ScanRecord scan, List<FindingRecord> findings) {
+        ActivityEvent.EventCategory category;
+        String op = scan.getOperationType().toUpperCase(Locale.ROOT);
+        switch (op) {
+            case "APK":
+            case "FILE":
+                category = ActivityEvent.EventCategory.APK;
+                break;
+            case "LINK":
+            case "PHISHING":
+                category = ActivityEvent.EventCategory.PHISHING;
+                break;
+            case "MESSAGE":
+            case "SMS":
+                category = ActivityEvent.EventCategory.SENSE;
+                break;
+            case "NETWORK_FIREWALL":
+            case "FIREWALL":
+            case "PERMISSION_AUDIT":
+            case "DEVICE":
+                category = ActivityEvent.EventCategory.FIREWALL;
+                break;
+            default:
+                category = ActivityEvent.EventCategory.SYSTEM;
+                break;
+        }
+
+        ThreatSeverity severity;
+        try {
+            severity = ThreatSeverity.valueOf(scan.getSeverity().toUpperCase(Locale.ROOT));
+        } catch (Exception e) {
+            severity = ThreatSeverity.INFO;
+        }
+
+        String title;
+        if ("KNOWN_MALICIOUS".equalsIgnoreCase(scan.getVerdict()) || severity == ThreatSeverity.CRITICAL) {
+            title = "🚨 Intercepted Threat: " + scan.getSource();
+        } else if ("SUSPICIOUS".equalsIgnoreCase(scan.getVerdict()) || severity == ThreatSeverity.HIGH) {
+            title = "⚠️ Suspicious Indicator: " + scan.getSource();
+        } else {
+            title = "✅ Verified Clean: " + scan.getSource();
+        }
+
+        List<String> details = new ArrayList<>();
+        details.add("Verdict: " + scan.getVerdict());
+        details.add("Operation: " + scan.getOperationType());
+        details.add("Status: " + scan.getProcessingStatus());
+        if (findings != null) {
+            for (FindingRecord f : findings) {
+                details.add(f.getIndicatorType() + " (" + f.getSeverity() + "): " + f.getExplanation());
+            }
+        }
+
+        String actionLabel = scan.getActionTaken();
+        if (actionLabel == null || actionLabel.isBlank()) {
+            actionLabel = "View Scan Details";
+        }
+
+        return new ActivityEvent(
+                scan.getId(),
+                new Date(scan.getTimestamp()),
+                category,
+                severity,
+                title,
+                scan.getSummary(),
+                details,
+                actionLabel
+        );
     }
 
     private void seedInitialChatMessages() {
@@ -193,12 +292,20 @@ public class AppState {
         return senseEngine;
     }
 
+    public MessageRiskAnalyzer getMessageRiskAnalyzer() {
+        return messageRiskAnalyzer;
+    }
+
     public PhishingUrlScanner getPhishingScanner() {
         return phishingScanner;
     }
 
     public LocalFirewallEngine getFirewallEngine() {
         return firewallEngine;
+    }
+
+    public FamilyRepository getFamilyRepository() {
+        return familyRepository;
     }
 
     public LocalStorageRepository getStorageRepository() {
@@ -212,6 +319,9 @@ public class AppState {
     public void setCurrentProfile(ChildProfile currentProfile) {
         this.currentProfile = currentProfile;
         this.safetyScore = currentProfile.getDefaultSafetyScore();
+        if (preferencesManager != null) {
+            preferencesManager.setCurrentProfile(currentProfile);
+        }
         if (currentProfile == ChildProfile.DADAJI) {
             setSeniorMode(true);
         } else {
@@ -249,8 +359,8 @@ public class AppState {
 
     public void setSeniorMode(boolean seniorMode) {
         this.isSeniorMode = seniorMode;
-        if (preferences != null) {
-            preferences.edit().putBoolean(KEY_SENIOR_MODE, seniorMode).apply();
+        if (preferencesManager != null) {
+            preferencesManager.setSeniorMode(seniorMode);
         }
         notifyListeners();
     }
@@ -261,8 +371,8 @@ public class AppState {
 
     public void setLargeText(boolean largeText) {
         this.isLargeText = largeText;
-        if (preferences != null) {
-            preferences.edit().putBoolean(KEY_LARGE_TEXT, largeText).apply();
+        if (preferencesManager != null) {
+            preferencesManager.setLargeText(largeText);
         }
         notifyListeners();
     }
@@ -273,8 +383,8 @@ public class AppState {
 
     public void setHighContrast(boolean highContrast) {
         this.isHighContrast = highContrast;
-        if (preferences != null) {
-            preferences.edit().putBoolean(KEY_HIGH_CONTRAST, highContrast).apply();
+        if (preferencesManager != null) {
+            preferencesManager.setHighContrast(highContrast);
         }
         notifyListeners();
     }
@@ -285,8 +395,8 @@ public class AppState {
 
     public void setHindi(boolean hindi) {
         this.isHindi = hindi;
-        if (preferences != null) {
-            preferences.edit().putBoolean(KEY_HINDI, hindi).apply();
+        if (preferencesManager != null) {
+            preferencesManager.setHindi(hindi);
         }
         notifyListeners();
     }
@@ -351,6 +461,18 @@ public class AppState {
 
     public void addChatMessage(ChatMessage message) {
         chatMessages.add(message);
+        notifyListeners();
+    }
+
+    public void updateLastAssistantMessage(String newText, String badge) {
+        for (int i = chatMessages.size() - 1; i >= 0; i--) {
+            if (!chatMessages.get(i).isUser) {
+                chatMessages.set(i, new ChatMessage(false, newText, badge));
+                notifyListeners();
+                return;
+            }
+        }
+        chatMessages.add(new ChatMessage(false, newText, badge));
         notifyListeners();
     }
 

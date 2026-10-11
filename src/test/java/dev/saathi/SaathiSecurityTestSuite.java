@@ -37,6 +37,7 @@ public class SaathiSecurityTestSuite {
         testLocalFirewall();
         testHindiSynthesizer();
         testApkScannerViewModel();
+        testUrlSafetyPipeline();
 
         System.out.printf("\nTest Results: %d/%d tests PASSED.%n", testsPassed, testsRun);
         if (testsPassed != testsRun) {
@@ -269,7 +270,33 @@ public class SaathiSecurityTestSuite {
 
     private static void assertFalse(boolean condition, String msg) {
         if (condition) {
-            throw new AssertionError("Condition should be false: " + msg);
+            throw new AssertionError("Condition failed: " + msg);
         }
+    }
+
+    private static void testUrlSafetyPipeline() {
+        startTest("UrlSafetyPipeline robust parsing, IDN/Punycode, and reputation states");
+        dev.saathi.shield.network.url.UrlSafetyPipeline pipeline = new dev.saathi.shield.network.url.UrlSafetyPipeline();
+
+        // 1. Invalid input rejection
+        try {
+            pipeline.analyze("   ");
+            throw new AssertionError("Empty URL should throw UrlParseException");
+        } catch (dev.saathi.shield.network.url.UrlParseException expected) {
+            assertTrue(expected.getMessage().contains("empty or blank"), "Rejects empty URL");
+        } catch (Exception ex) {
+            throw new AssertionError("Expected UrlParseException but got: " + ex);
+        }
+
+        // 2. Punycode & User-info detection
+        try {
+            var r1 = pipeline.analyze("https://sbi.co.in@evil-server.top/update");
+            assertEquals(ScanVerdict.KNOWN_MALICIOUS, r1.getCombinedVerdict());
+            assertEquals(dev.saathi.shield.network.url.ReputationState.NOT_CHECKED, r1.getReputationResult().getState());
+        } catch (Exception ex) {
+            throw new AssertionError("Analysis failed: " + ex);
+        }
+
+        pass();
     }
 }

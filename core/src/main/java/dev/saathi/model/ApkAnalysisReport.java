@@ -20,6 +20,15 @@ public class ApkAnalysisReport {
     private final List<String> recommendedActions;
     private final boolean canSafelyProceedWithInstall;
 
+    // Structured ZIP inventory & anomalies
+    private final int totalZipEntries;
+    private final long totalUncompressedBytes;
+    private final List<String> zipInventory;
+    private final List<String> nativeLibraries;
+    private final List<String> structuralAnomalies;
+
+    private final dev.saathi.shield.network.hash.HashReputationResult hashReputationResult;
+
     public ApkAnalysisReport(
             String fileName,
             String sha256Checksum,
@@ -33,6 +42,57 @@ public class ApkAnalysisReport {
             DexInspectionResult dexResult,
             List<String> recommendedActions,
             boolean canSafelyProceedWithInstall) {
+        this(fileName, sha256Checksum, fileSizeBytes, verdict, summaryExplanation, plainLanguageExplanation,
+                indicators, manifestMetadata, certificateMetadata, dexResult, recommendedActions,
+                canSafelyProceedWithInstall, 0, fileSizeBytes, Collections.emptyList(),
+                Collections.emptyList(), Collections.emptyList(),
+                dev.saathi.shield.network.hash.HashReputationResult.notChecked("Live hash reputation provider unconfigured."));
+    }
+
+    public ApkAnalysisReport(
+            String fileName,
+            String sha256Checksum,
+            long fileSizeBytes,
+            ScanVerdict verdict,
+            String summaryExplanation,
+            String plainLanguageExplanation,
+            List<ThreatIndicator> indicators,
+            ManifestMetadata manifestMetadata,
+            CertificateMetadata certificateMetadata,
+            DexInspectionResult dexResult,
+            List<String> recommendedActions,
+            boolean canSafelyProceedWithInstall,
+            int totalZipEntries,
+            long totalUncompressedBytes,
+            List<String> zipInventory,
+            List<String> nativeLibraries,
+            List<String> structuralAnomalies) {
+        this(fileName, sha256Checksum, fileSizeBytes, verdict, summaryExplanation, plainLanguageExplanation,
+                indicators, manifestMetadata, certificateMetadata, dexResult, recommendedActions,
+                canSafelyProceedWithInstall, totalZipEntries, totalUncompressedBytes, zipInventory,
+                nativeLibraries, structuralAnomalies,
+                dev.saathi.shield.network.hash.HashReputationResult.notChecked("Live hash reputation provider unconfigured."));
+    }
+
+    public ApkAnalysisReport(
+            String fileName,
+            String sha256Checksum,
+            long fileSizeBytes,
+            ScanVerdict verdict,
+            String summaryExplanation,
+            String plainLanguageExplanation,
+            List<ThreatIndicator> indicators,
+            ManifestMetadata manifestMetadata,
+            CertificateMetadata certificateMetadata,
+            DexInspectionResult dexResult,
+            List<String> recommendedActions,
+            boolean canSafelyProceedWithInstall,
+            int totalZipEntries,
+            long totalUncompressedBytes,
+            List<String> zipInventory,
+            List<String> nativeLibraries,
+            List<String> structuralAnomalies,
+            dev.saathi.shield.network.hash.HashReputationResult hashReputationResult) {
         this.fileName = fileName;
         this.sha256Checksum = sha256Checksum;
         this.fileSizeBytes = fileSizeBytes;
@@ -45,6 +105,14 @@ public class ApkAnalysisReport {
         this.dexResult = dexResult;
         this.recommendedActions = recommendedActions != null ? recommendedActions : Collections.emptyList();
         this.canSafelyProceedWithInstall = canSafelyProceedWithInstall;
+        this.totalZipEntries = totalZipEntries;
+        this.totalUncompressedBytes = totalUncompressedBytes;
+        this.zipInventory = zipInventory != null ? zipInventory : Collections.emptyList();
+        this.nativeLibraries = nativeLibraries != null ? nativeLibraries : Collections.emptyList();
+        this.structuralAnomalies = structuralAnomalies != null ? structuralAnomalies : Collections.emptyList();
+        this.hashReputationResult = hashReputationResult != null
+                ? hashReputationResult
+                : dev.saathi.shield.network.hash.HashReputationResult.notChecked("Live hash reputation provider unconfigured.");
     }
 
     public String getFileName() {
@@ -93,5 +161,29 @@ public class ApkAnalysisReport {
 
     public boolean canSafelyProceedWithInstall() {
         return canSafelyProceedWithInstall;
+    }
+
+    public int getTotalZipEntries() {
+        return totalZipEntries;
+    }
+
+    public long getTotalUncompressedBytes() {
+        return totalUncompressedBytes;
+    }
+
+    public List<String> getZipInventory() {
+        return zipInventory;
+    }
+
+    public List<String> getNativeLibraries() {
+        return nativeLibraries;
+    }
+
+    public List<String> getStructuralAnomalies() {
+        return structuralAnomalies;
+    }
+
+    public dev.saathi.shield.network.hash.HashReputationResult getHashReputationResult() {
+        return hashReputationResult;
     }
 }

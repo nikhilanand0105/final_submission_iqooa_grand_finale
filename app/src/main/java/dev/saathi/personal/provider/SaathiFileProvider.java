@@ -24,11 +24,30 @@ public class SaathiFileProvider extends ContentProvider {
         return true;
     }
 
+    private File resolveFile(Uri uri) {
+        if (uri == null) return null;
+        String segment = uri.getLastPathSegment();
+        if (segment == null) return null;
+
+        // 1. Check in cacheDir
+        File cacheFile = new File(getContext().getCacheDir(), segment);
+        if (cacheFile.exists()) return cacheFile;
+
+        // 2. Check in Downloads
+        File downloadDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS);
+        File downloadFile = new File(downloadDir, segment);
+        if (downloadFile.exists()) return downloadFile;
+
+        File sdcardDownload = new File("/sdcard/Download", segment);
+        if (sdcardDownload.exists()) return sdcardDownload;
+
+        return cacheFile;
+    }
+
     @Override
     public ParcelFileDescriptor openFile(Uri uri, String mode) throws FileNotFoundException {
-        File cacheDir = getContext().getCacheDir();
-        File file = new File(cacheDir, uri.getLastPathSegment());
-        if (!file.exists()) {
+        File file = resolveFile(uri);
+        if (file == null || !file.exists()) {
             throw new FileNotFoundException("File not found: " + uri);
         }
         return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY);
@@ -40,8 +59,8 @@ public class SaathiFileProvider extends ContentProvider {
             projection = new String[]{OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE};
         }
         MatrixCursor cursor = new MatrixCursor(projection);
-        File file = new File(getContext().getCacheDir(), uri.getLastPathSegment());
-        if (file.exists()) {
+        File file = resolveFile(uri);
+        if (file != null && file.exists()) {
             Object[] row = new Object[projection.length];
             for (int i = 0; i < projection.length; i++) {
                 if (OpenableColumns.DISPLAY_NAME.equals(projection[i])) {

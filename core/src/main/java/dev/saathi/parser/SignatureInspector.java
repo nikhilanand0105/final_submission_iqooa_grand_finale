@@ -15,27 +15,40 @@ import java.util.Map;
  */
 public class SignatureInspector {
 
+    private static final byte[] APK_SIG_BLOCK_MAGIC = new byte[]{
+            0x41, 0x50, 0x4B, 0x20, 0x53, 0x69, 0x67, 0x20,
+            0x42, 0x6C, 0x6F, 0x63, 0x6B, 0x20, 0x34, 0x32 // "APK Sig Block 42"
+    };
+
     public static CertificateMetadata inspect(Map<String, byte[]> metaInfEntries) {
-        if (metaInfEntries == null || metaInfEntries.isEmpty()) {
-            return new CertificateMetadata("Unknown", "Unknown", "N/A", "N/A", null, null, false, false, false);
+        return inspect(metaInfEntries, null);
+    }
+
+    public static CertificateMetadata inspect(Map<String, byte[]> metaInfEntries, java.io.File apkFile) {
+        // 1. Check v1 signature block files: .RSA, .DSA, .EC
+        if (metaInfEntries != null && !metaInfEntries.isEmpty()) {
+            for (Map.Entry<String, byte[]> entry : metaInfEntries.entrySet()) {
+                String name = entry.getKey().toUpperCase(java.util.Locale.ROOT);
+                if (name.endsWith(".RSA") || name.endsWith(".DSA") || name.endsWith(".EC")) {
+                    try {
+                        CertificateFactory cf = CertificateFactory.getInstance("X.509");
+                        ByteArrayInputStream bais = new ByteArrayInputStream(entry.getValue());
+                        for (java.security.cert.Certificate cert : cf.generateCertificates(bais)) {
+                            if (cert instanceof X509Certificate) {
+                                return extractMetadata((X509Certificate) cert);
+                            }
+                        }
+                    } catch (Exception ignored) {
+                    }
+                }
+            }
         }
 
-        // Look for signature block files: .RSA, .DSA, .EC
-        for (Map.Entry<String, byte[]> entry : metaInfEntries.entrySet()) {
-            String name = entry.getKey().toUpperCase();
-            if (name.endsWith(".RSA") || name.endsWith(".DSA") || name.endsWith(".EC")) {
-                try {
-                    CertificateFactory cf = CertificateFactory.getInstance("X.509");
-                    ByteArrayInputStream bais = new ByteArrayInputStream(entry.getValue());
-                    // Many PKCS7 files can be parsed directly by CertificateFactory or generateCertificates
-                    for (java.security.cert.Certificate cert : cf.generateCertificates(bais)) {
-                        if (cert instanceof X509Certificate) {
-                            X509Certificate x509 = (X509Certificate) cert;
-                            return extractMetadata(x509);
-                        }
-                    }
-                } catch (Exception ignored) {
-                }
+        // 2. Check APK Signature Scheme v2/v3 block from APK file directly
+        if (apkFile != null && apkFile.exists() && apkFile.length() > 64) {
+            CertificateMetadata v2v3 = parseApkSigningBlock(apkFile);
+            if (v2v3 != null) {
+                return v2v3;
             }
         }
 
@@ -50,6 +63,89 @@ public class SignatureInspector {
                 false,
                 false
         );
+    }
+
+    private static CertificateMetadata parseApkSigningBlock(java.io.File apkFile) {
+        try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(apkFile, "r")) {
+            long fileLength = raf.length();
+            if (fileLength < 1024) return null;
+
+            int searchLength = (int) Math.min(fileLength, 65536);
+            byte[] tail = new byte[searchLength];
+            raf.seek(fileLength - searchLength);
+            raf.readFully(tail);
+
+            int eocdOffsetInTail = -1;
+            for (int i = searchLength - 22; i >= 0; i--) {
+                if (tail[i] == 0x50 && tail[i + 1] == 0x4B && tail[i + 2] == 0x05 && tail[i + 3] == 0x06) {
+                    eocdOffsetInTail = i;
+                    break;
+                }
+            }
+
+            if (eocdOffsetInTail == -1) return null;
+
+            java.nio.ByteBuffer eocdBuffer = java.nio.ByteBuffer.wrap(tail).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+            long centralDirOffset = eocdBuffer.getInt(eocdOffsetInTail + 16) & 0xFFFFFFFFL;
+
+            if (centralDirOffset < 32 || centralDirOffset > fileLength) return null;
+
+            raf.seek(centralDirOffset - 16);
+            byte[] magic = new byte[16];
+            raf.readFully(magic);
+            if (!java.util.Arrays.equals(magic, APK_SIG_BLOCK_MAGIC)) {
+                return null;
+            }
+
+            raf.seek(centralDirOffset - 24);
+            byte[] sizeBytes = new byte[8];
+            raf.readFully(sizeBytes);
+            long blockSize = java.nio.ByteBuffer.wrap(sizeBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN).getLong();
+
+            long blockStart = centralDirOffset - blockSize - 8;
+            if (blockStart < 0 || blockStart >= centralDirOffset) return null;
+
+            raf.seek(blockStart + 8);
+            long remaining = blockSize - 24;
+            while (remaining > 12) {
+                byte[] pairHdr = new byte[12];
+                raf.readFully(pairHdr);
+                java.nio.ByteBuffer pairBuf = java.nio.ByteBuffer.wrap(pairHdr).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+                long pairSize = pairBuf.getLong();
+                int id = pairBuf.getInt();
+                remaining -= 12;
+
+                int valueLen = (int) (pairSize - 4);
+                if (valueLen <= 0 || valueLen > remaining) break;
+
+                if (id == 0x7109871A || id == 0xF05368C0) {
+                    byte[] valueBytes = new byte[valueLen];
+                    raf.readFully(valueBytes);
+                    java.nio.ByteBuffer vb = java.nio.ByteBuffer.wrap(valueBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+
+                    int signersSeqLen = vb.getInt();
+                    int signerLen = vb.getInt();
+                    int signedDataLen = vb.getInt();
+
+                    int digestsLen = vb.getInt();
+                    vb.position(vb.position() + digestsLen);
+
+                    int certsLen = vb.getInt();
+                    int certLen = vb.getInt();
+                    byte[] certBytes = new byte[certLen];
+                    vb.get(certBytes);
+
+                    CertificateFactory cf = CertificateFactory.getInstance("X.509");
+                    X509Certificate x509 = (X509Certificate) cf.generateCertificate(new ByteArrayInputStream(certBytes));
+                    return extractMetadata(x509);
+                } else {
+                    raf.skipBytes(valueLen);
+                    remaining -= valueLen;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
     }
 
     public static CertificateMetadata extractMetadata(X509Certificate x509) {

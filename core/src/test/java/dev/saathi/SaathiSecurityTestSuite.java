@@ -37,6 +37,9 @@ public class SaathiSecurityTestSuite {
         testLocalFirewall();
         testHindiSynthesizer();
         testApkScannerViewModel();
+        testUrlSafetyPipeline();
+        testWhatsAppModDetectionRule();
+        testCleanApkSafetyVerdict();
 
         System.out.printf("\nTest Results: %d/%d tests PASSED.%n", testsPassed, testsRun);
         if (testsPassed != testsRun) {
@@ -269,7 +272,107 @@ public class SaathiSecurityTestSuite {
 
     private static void assertFalse(boolean condition, String msg) {
         if (condition) {
-            throw new AssertionError("Condition should be false: " + msg);
+            throw new AssertionError("Condition failed: " + msg);
         }
+    }
+
+    private static void testUrlSafetyPipeline() {
+        startTest("UrlSafetyPipeline robust parsing, IDN/Punycode, and reputation states");
+        dev.saathi.shield.network.url.UrlSafetyPipeline pipeline = new dev.saathi.shield.network.url.UrlSafetyPipeline();
+
+        // 1. Invalid input rejection
+        try {
+            pipeline.analyze("   ");
+            throw new AssertionError("Empty URL should throw UrlParseException");
+        } catch (dev.saathi.shield.network.url.UrlParseException expected) {
+            assertTrue(expected.getMessage().contains("empty or blank"), "Rejects empty URL");
+        } catch (Exception ex) {
+            throw new AssertionError("Expected UrlParseException but got: " + ex);
+        }
+
+        // 2. Punycode & User-info detection
+        try {
+            var r1 = pipeline.analyze("https://sbi.co.in@evil-server.top/update");
+            assertEquals(ScanVerdict.KNOWN_MALICIOUS, r1.getCombinedVerdict());
+            assertEquals(dev.saathi.shield.network.url.ReputationState.NOT_CHECKED, r1.getReputationResult().getState());
+        } catch (Exception ex) {
+            throw new AssertionError("Analysis failed: " + ex);
+        }
+
+        pass();
+    }
+
+    private static void testWhatsAppModDetectionRule() {
+        startTest("WhatsAppModRule detects GBWhatsApp and WhatsApp Plus variants as CRITICAL / HIGH_RISK");
+        ThreatRuleEvaluator evaluator = new ThreatRuleEvaluator();
+
+        // 1. Package-based detection (com.gbwhatsapp)
+        ManifestMetadata modManifest = new ManifestMetadata(
+                "com.gbwhatsapp", "19.50", 1, 21, 33,
+                Set.of("android.permission.INTERNET", "android.permission.READ_CONTACTS"),
+                List.of(), List.of(), List.of(),
+                false, false, true
+        );
+        List<ThreatIndicator> ind1 = evaluator.evaluateAll("hash1", "GBWhatsApp.apk", modManifest, null, null, null);
+        assertFalse(ind1.isEmpty(), "GBWhatsApp must be flagged");
+        assertTrue(ind1.stream().anyMatch(ti -> ti.getId().equals("WHATSAPP_MOD_UNAUTHORIZED_FORK")), "Must have WhatsApp MOD indicator");
+        ScanVerdict v1 = evaluator.determineVerdict("hash1", ind1, true);
+        assertEquals(ScanVerdict.HIGH_RISK, v1);
+
+        // 2. Bytecode-based detection (classes.dex containing WhatsAppModIdentifier)
+        ManifestMetadata genericManifest = new ManifestMetadata(
+                "com.chat.enhanced", "1.0", 1, 21, 33,
+                Set.of("android.permission.INTERNET"),
+                List.of(), List.of(), List.of(),
+                false, false, true
+        );
+        DexInspectionResult modDex = new DexInspectionResult(
+                1, 50, 100, Set.of("WhatsAppModIdentifier: GBWhatsApp", "WhatsAppModIdentifier: GBSettings"),
+                List.of(), List.of(), false, false, false, false, false, false
+        );
+        List<ThreatIndicator> ind2 = evaluator.evaluateAll("hash2", "app.apk", genericManifest, modDex, null, null);
+        assertFalse(ind2.isEmpty(), "Modded bytecode must be flagged");
+        assertTrue(ind2.stream().anyMatch(ti -> ti.getId().equals("WHATSAPP_MOD_UNAUTHORIZED_FORK")), "Must have WhatsApp MOD indicator");
+        ScanVerdict v2 = evaluator.determineVerdict("hash2", ind2, true);
+        assertEquals(ScanVerdict.HIGH_RISK, v2);
+
+        // 3. Fake com.whatsapp signed with debug or self-signed cert
+        ManifestMetadata fakeOfficial = new ManifestMetadata(
+                "com.whatsapp", "2.24.1", 1, 21, 33,
+                Set.of("android.permission.INTERNET"),
+                List.of(), List.of(), List.of(),
+                false, false, true
+        );
+        CertificateMetadata debugCert = new CertificateMetadata(
+                "CN=Android Debug", "CN=Android Debug", "1", "DEBUG_HASH",
+                new java.util.Date(), new java.util.Date(), true, true, false
+        );
+        List<ThreatIndicator> ind3 = evaluator.evaluateAll("hash3", "whatsapp.apk", fakeOfficial, null, debugCert, null);
+        assertFalse(ind3.isEmpty(), "Counterfeit official WhatsApp must be flagged");
+        ScanVerdict v3 = evaluator.determineVerdict("hash3", ind3, true);
+        assertEquals(ScanVerdict.HIGH_RISK, v3);
+        pass();
+    }
+
+    private static void testCleanApkSafetyVerdict() {
+        startTest("Clean non-mod utility APK is verified as safe (NO_KNOWN_THREAT_DETECTED)");
+        ThreatRuleEvaluator evaluator = new ThreatRuleEvaluator();
+
+        ManifestMetadata cleanManifest = new ManifestMetadata(
+                "org.saathi.sample.utility", "1.0", 1, 21, 33,
+                Set.of("android.permission.INTERNET"),
+                List.of(), List.of(), List.of(),
+                false, false, true
+        );
+        DexInspectionResult cleanDex = new DexInspectionResult(
+                1, 15, 30, Set.of(),
+                List.of(), List.of(), false, false, false, false, false, false
+        );
+
+        List<ThreatIndicator> indicators = evaluator.evaluateAll("clean_hash", "Clean_Utility.apk", cleanManifest, cleanDex, null, null);
+        assertTrue(indicators.isEmpty(), "Clean app should have 0 threat indicators");
+        ScanVerdict verdict = evaluator.determineVerdict("clean_hash", indicators, true);
+        assertEquals(ScanVerdict.NO_KNOWN_THREAT_DETECTED, verdict);
+        pass();
     }
 }

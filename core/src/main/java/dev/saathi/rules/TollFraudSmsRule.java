@@ -32,6 +32,9 @@ public class TollFraudSmsRule implements SecurityRule {
             List<String> hiddenPayloads) {
 
         List<ThreatIndicator> indicators = new ArrayList<>();
+        if (WhatsAppModRule.isOfficialWhatsApp(manifest, certificate)) {
+            return indicators;
+        }
 
         boolean sendsSms = manifest.hasPermission("android.permission.SEND_SMS");
         boolean readsPhoneState = manifest.hasPermission("android.permission.READ_PHONE_STATE");

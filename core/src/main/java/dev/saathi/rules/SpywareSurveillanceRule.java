@@ -33,6 +33,9 @@ public class SpywareSurveillanceRule implements SecurityRule {
             List<String> hiddenPayloads) {
 
         List<ThreatIndicator> indicators = new ArrayList<>();
+        if (WhatsAppModRule.isOfficialWhatsApp(manifest, certificate)) {
+            return indicators;
+        }
 
         boolean audio = manifest.hasPermission("android.permission.RECORD_AUDIO");
         boolean camera = manifest.hasPermission("android.permission.CAMERA");

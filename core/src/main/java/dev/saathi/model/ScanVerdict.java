@@ -21,8 +21,12 @@ public enum ScanVerdict {
         "No Known Threat Detected",
         "Static checks completed without identifying known malicious patterns. Runtime behaviour cannot be guaranteed."
     ),
+    INCONCLUSIVE(
+        "Inconclusive",
+        "The file was partially parsed or lacked executable components to reach a definitive static verdict."
+    ),
     UNABLE_TO_DETERMINE(
-        "Unable to Determine",
+        "Parse Failed / Unable to Determine",
         "The file is unsupported, encrypted, incomplete, or could not be sufficiently analysed."
     );
 

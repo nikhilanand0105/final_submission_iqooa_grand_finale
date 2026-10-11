@@ -65,6 +65,27 @@ public class DexBytecodeScanner {
             "AccessibilityServiceInfo"
     );
 
+    private static final List<String> WHATSAPP_MOD_STRINGS = Arrays.asList(
+            "com/gbwhatsapp",
+            "com/whatsapp/plus",
+            "com/yowhatsapp",
+            "com/fmwhatsapp",
+            "com/whatsapp/gold",
+            "GBWhatsApp",
+            "WhatsApp Plus",
+            "YoWhatsApp",
+            "FMWhatsApp",
+            "WhatsApp Gold",
+            "WhatsAppMod",
+            "WhatsAppPlus",
+            "GBSettings",
+            "YoSettings",
+            "FMSettings",
+            "AeroSettings",
+            "Anti-Ban",
+            "WA Tweaker"
+    );
+
     public static DexInspectionResult scan(List<byte[]> dexFilesBytes) {
         if (dexFilesBytes == null || dexFilesBytes.isEmpty()) {
             return new DexInspectionResult(0, 0, 0, Collections.emptySet(), Collections.emptyList(), Collections.emptyList(), false, false, false, false, false, false);
@@ -85,49 +106,63 @@ public class DexBytecodeScanner {
         boolean hasAccessibilityAbuse = false;
 
         for (byte[] dexBytes : dexFilesBytes) {
-            if (dexBytes == null || dexBytes.length < 112) continue; // DEX header minimum is 112 bytes
+            if (dexBytes == null || dexBytes.length < 4) continue;
 
-            // Check DEX magic prefix
-            if (dexBytes[0] != DEX_MAGIC_PREFIX[0] || dexBytes[1] != DEX_MAGIC_PREFIX[1] ||
-                dexBytes[2] != DEX_MAGIC_PREFIX[2] || dexBytes[3] != DEX_MAGIC_PREFIX[3]) {
-                continue;
+            List<String> strings = new ArrayList<>();
+
+            // If valid DEX header is present, parse structural string pool
+            if (dexBytes.length >= 112 &&
+                dexBytes[0] == DEX_MAGIC_PREFIX[0] && dexBytes[1] == DEX_MAGIC_PREFIX[1] &&
+                dexBytes[2] == DEX_MAGIC_PREFIX[2] && dexBytes[3] == DEX_MAGIC_PREFIX[3]) {
+
+                ByteBuffer buffer = ByteBuffer.wrap(dexBytes).order(ByteOrder.LITTLE_ENDIAN);
+                try {
+                    buffer.position(56);
+                    int stringIdsSize = buffer.getInt();
+                    int stringIdsOff = buffer.getInt();
+                    int typeIdsSize = buffer.getInt();
+                    int typeIdsOff = buffer.getInt();
+                    int protoIdsSize = buffer.getInt();
+                    int protoIdsOff = buffer.getInt();
+                    int fieldIdsSize = buffer.getInt();
+                    int fieldIdsOff = buffer.getInt();
+                    int methodIdsSize = buffer.getInt();
+                    int methodIdsOff = buffer.getInt();
+                    int classDefsSize = buffer.getInt();
+                    int classDefsOff = buffer.getInt();
+
+                    totalClasses += classDefsSize;
+                    totalMethods += methodIdsSize;
+
+                    // Read string pool
+                    strings = readStrings(buffer, stringIdsSize, stringIdsOff);
+                } catch (Exception ignored) {
+                }
             }
 
-            ByteBuffer buffer = ByteBuffer.wrap(dexBytes).order(ByteOrder.LITTLE_ENDIAN);
+            // Fallback: extract ASCII / UTF-8 string tokens if table parsing produced no strings
+            if (strings == null || strings.isEmpty()) {
+                strings = extractRawStrings(dexBytes);
+            }
 
-            try {
-                buffer.position(56);
-                int stringIdsSize = buffer.getInt();
-                int stringIdsOff = buffer.getInt();
-                int typeIdsSize = buffer.getInt();
-                int typeIdsOff = buffer.getInt();
-                int protoIdsSize = buffer.getInt();
-                int protoIdsOff = buffer.getInt();
-                int fieldIdsSize = buffer.getInt();
-                int fieldIdsOff = buffer.getInt();
-                int methodIdsSize = buffer.getInt();
-                int methodIdsOff = buffer.getInt();
-                int classDefsSize = buffer.getInt();
-                int classDefsOff = buffer.getInt();
+            for (String str : strings) {
+                if (str == null || str.isEmpty()) continue;
 
-                totalClasses += classDefsSize;
-                totalMethods += methodIdsSize;
-
-                // Read string pool
-                List<String> strings = readStrings(buffer, stringIdsSize, stringIdsOff);
-
-                for (String str : strings) {
-                    if (str == null || str.isEmpty()) continue;
-
-                    for (String api : DYNAMIC_LOADING_APIS) {
-                        if (str.contains(api)) {
-                            usesDynamicLoading = true;
-                            suspiciousApis.add("DynamicClassLoader: " + api);
-                        }
+                for (String modStr : WHATSAPP_MOD_STRINGS) {
+                    if (str.contains(modStr)) {
+                        suspiciousApis.add("WhatsAppModIdentifier: " + modStr);
                     }
+                }
 
-                    for (String api : REFLECTION_APIS) {
-                        if (str.contains(api)) {
+                for (String api : DYNAMIC_LOADING_APIS) {
+                    if (str.contains(api)) {
+                        usesDynamicLoading = true;
+                        suspiciousApis.add("DynamicClassLoader: " + api);
+                    }
+                }
+
+                for (String api : REFLECTION_APIS) {
+                    if (str.contains(api)) {
                             usesReflection = true;
                             suspiciousApis.add("Reflection: " + api);
                         }
@@ -174,9 +209,7 @@ public class DexBytecodeScanner {
                         if (!matchedIp.equals("0.0.0.0") && !matchedIp.equals("127.0.0.1")) {
                             ips.add(matchedIp);
                         }
-                    }
                 }
-            } catch (Exception ignored) {
             }
         }
 
@@ -239,4 +272,29 @@ public class DexBytecodeScanner {
         }
         return result;
     }
+
+    private static List<String> extractRawStrings(byte[] data) {
+        List<String> list = new ArrayList<>();
+        if (data == null) return list;
+        StringBuilder sb = new StringBuilder();
+        for (byte b : data) {
+            if (b >= 32 && b <= 126) {
+                sb.append((char) b);
+                if (sb.length() > 512) {
+                    list.add(sb.toString());
+                    sb.setLength(0);
+                }
+            } else {
+                if (sb.length() >= 4) {
+                    list.add(sb.toString());
+                }
+                sb.setLength(0);
+            }
+        }
+        if (sb.length() >= 4) {
+            list.add(sb.toString());
+        }
+        return list;
+    }
 }
+

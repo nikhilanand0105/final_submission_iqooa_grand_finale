@@ -48,17 +48,29 @@ public class VerdictExplainer {
             case HIGH_RISK:
                 tech.append("VERDICT: HIGH RISK.\n")
                     .append("Multiple dangerous capability combinations were identified in the static manifest and bytecode:\n");
+                boolean isWhatsAppMod = false;
                 for (ThreatIndicator ti : indicators) {
+                    if (ti.getId().contains("WHATSAPP_MOD")) {
+                        isWhatsAppMod = true;
+                    }
                     if (ti.getSeverity() == ThreatSeverity.CRITICAL || ti.getSeverity() == ThreatSeverity.HIGH) {
                         tech.append("• [").append(ti.getCategory()).append("] ").append(ti.getTitle()).append(": ").append(ti.getDescription()).append("\n");
                     }
                 }
-                plain.append("🛑 DANGEROUS APP DETECTED.\n")
-                     .append("This application asks for dangerous permissions that could allow it to read your bank OTPs, record your screen, or control your phone without your permission.\n")
-                     .append("Unless this is an application from an official trusted developer, we strongly advise against installing it.\n");
-                actions.add("Cancel installation.");
-                actions.add("Delete the downloaded APK file from your Downloads folder.");
-                actions.add("Never grant Accessibility or Screen Drawing permissions to unfamiliar apps.");
+                if (isWhatsAppMod) {
+                    plain.append("🛑 DANGEROUS WHATSAPP MOD DETECTED.\n")
+                         .append("This file is an unauthorized, modified WhatsApp clone (such as GBWhatsApp, WhatsApp Plus, or WhatsApp Gold). Unofficial WhatsApp mods bypass end-to-end encryption safeguards, inject spyware that can read your private chats and bank OTPs, and cause WhatsApp to permanently ban your phone number.\n");
+                    actions.add("Delete this file immediately from your phone.");
+                    actions.add("Never install unofficial WhatsApp versions (GBWhatsApp, WhatsApp Plus, etc.).");
+                    actions.add("Only download the official WhatsApp Messenger directly from Google Play Store.");
+                } else {
+                    plain.append("🛑 DANGEROUS APP DETECTED.\n")
+                         .append("This application asks for dangerous permissions that could allow it to read your bank OTPs, record your screen, or control your phone without your permission.\n")
+                         .append("Unless this is an application from an official trusted developer, we strongly advise against installing it.\n");
+                    actions.add("Cancel installation.");
+                    actions.add("Delete the downloaded APK file from your Downloads folder.");
+                    actions.add("Never grant Accessibility or Screen Drawing permissions to unfamiliar apps.");
+                }
                 break;
 
             case CAUTION:
@@ -85,12 +97,21 @@ public class VerdictExplainer {
                 actions.add("Always download apps from Google Play Store whenever possible.");
                 break;
 
+            case INCONCLUSIVE:
+                tech.append("VERDICT: INCONCLUSIVE.\n")
+                    .append("The package structure was partially parsed, but lacked executable Dalvik bytecode or standard application components for a conclusive static verdict.\n");
+                plain.append("⚠️ INCONCLUSIVE SCAN RESULT.\n")
+                     .append("This file was partially checked, but does not contain enough standard application code to confirm its safety. It may be an incomplete split-APK package.\n");
+                actions.add("Exercise caution before installing.");
+                actions.add("Verify whether this is a complete APK or a split-APK component.");
+                break;
+
             case UNABLE_TO_DETERMINE:
             default:
-                tech.append("VERDICT: UNABLE TO DETERMINE.\n")
-                    .append("The APK file is corrupt, encrypted, incomplete, or uses an unsupported container format.\n");
+                tech.append("VERDICT: UNABLE TO DETERMINE (PARSE FAILED).\n")
+                    .append("The APK file is corrupt, truncated, encrypted, or uses an unsupported container format.\n");
                 plain.append("❓ COULD NOT SAFELY SCAN THIS FILE.\n")
-                     .append("The file is damaged, incomplete, or locked. Saathi could not inspect its internal contents to ensure your safety.\n");
+                     .append("The file is damaged, incomplete, or not a valid Android application. Saathi could not inspect its internal contents to ensure your safety.\n");
                 actions.add("Do not install incomplete or damaged files.");
                 actions.add("Download the file again from the original source.");
                 break;

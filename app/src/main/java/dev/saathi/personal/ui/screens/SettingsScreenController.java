@@ -16,6 +16,8 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import dev.saathi.personal.R;
+import dev.saathi.personal.network.NetworkProtectionManager;
+import dev.saathi.personal.network.NetworkProtectionStatus;
 import dev.saathi.personal.ui.model.NavigationTab;
 import dev.saathi.personal.ui.state.AppState;
 
@@ -62,6 +64,9 @@ public class SettingsScreenController {
 
         // 2. Appearance & Accessibility (Senior Mode, Large Text, Contrast)
         contentLayout.addView(buildAccessibilitySection(senior));
+
+        // 2b. Real Network Protection & Local Firewall
+        contentLayout.addView(buildNetworkProtectionSection(senior));
 
         // 3. Privacy & On-Device Storage
         contentLayout.addView(buildPrivacySection(senior));
@@ -218,6 +223,137 @@ public class SettingsScreenController {
         return row;
     }
 
+    private View buildNetworkProtectionSection(boolean senior) {
+        NetworkProtectionManager npm = NetworkProtectionManager.getInstance(activity);
+        NetworkProtectionStatus status = npm.getStatus();
+
+        LinearLayout card = new LinearLayout(activity);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setBackgroundResource(R.drawable.bg_card_cred);
+        card.setPadding((int) (18 * density), (int) (16 * density), (int) (18 * density), (int) (16 * density));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        params.bottomMargin = (int) (16 * density);
+        card.setLayoutParams(params);
+
+        // Header Row: Category and Badge
+        LinearLayout rowHeader = new LinearLayout(activity);
+        rowHeader.setOrientation(LinearLayout.HORIZONTAL);
+        rowHeader.setGravity(Gravity.CENTER_VERTICAL);
+        rowHeader.setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        ));
+
+        TextView label = new TextView(activity);
+        label.setText("NETWORK PROTECTION & DNS FIREWALL");
+        label.setTextSize(senior ? 14 : 11);
+        label.setTextColor(0xFF888888);
+        label.setTypeface(null, android.graphics.Typeface.BOLD);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        label.setLayoutParams(lp);
+        rowHeader.addView(label);
+
+        TextView badge = new TextView(activity);
+        badge.setText(status.getBadgeText());
+        badge.setTextSize(senior ? 12 : 10);
+        badge.setTypeface(null, android.graphics.Typeface.BOLD);
+        badge.setPadding((int) (8 * density), (int) (3 * density), (int) (8 * density), (int) (3 * density));
+        if (status == NetworkProtectionStatus.RUNNING) {
+            badge.setTextColor(0xFF386B57);
+            badge.setBackgroundResource(R.drawable.bg_pill_emerald);
+        } else if (status == NetworkProtectionStatus.BLOCKED_BY_SYSTEM || status == NetworkProtectionStatus.FAILED) {
+            badge.setTextColor(0xFFA63232);
+            badge.setBackgroundResource(R.drawable.bg_pill_crimson);
+        } else if (status == NetworkProtectionStatus.PERMISSION_NEEDED) {
+            badge.setTextColor(0xFF855A12);
+            badge.setBackgroundResource(R.drawable.bg_card_glow_amber);
+        } else {
+            badge.setTextColor(0xFF666666);
+            badge.setBackgroundResource(R.drawable.bg_pill_dark);
+        }
+        rowHeader.addView(badge);
+        card.addView(rowHeader);
+
+        // Subtitle / Status description
+        TextView tvDesc = new TextView(activity);
+        tvDesc.setText(status.getDescription());
+        tvDesc.setTextSize(senior ? 14 : 12);
+        tvDesc.setTextColor(0xFF444444);
+        tvDesc.setLineSpacing(0, 1.25f);
+        LinearLayout.LayoutParams dp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        dp.topMargin = (int) (8 * density);
+        tvDesc.setLayoutParams(dp);
+        card.addView(tvDesc);
+
+        // Action Buttons Row: Enable/Disable and System Settings
+        LinearLayout btnRow = new LinearLayout(activity);
+        btnRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams brp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        brp.topMargin = (int) (12 * density);
+        btnRow.setLayoutParams(brp);
+
+        Button btnToggle = new Button(activity);
+        if (status == NetworkProtectionStatus.RUNNING) {
+            btnToggle.setText("🛑 Stop Protection");
+            btnToggle.setBackgroundResource(R.drawable.bg_pill_dark);
+            btnToggle.setTextColor(0xFF141414);
+            btnToggle.setOnClickListener(v -> {
+                npm.stopProtection(activity);
+                Toast.makeText(activity, "Network protection disabled.", Toast.LENGTH_SHORT).show();
+                render();
+            });
+        } else {
+            btnToggle.setText("🛡️ Enable Protection");
+            btnToggle.setBackgroundResource(R.drawable.bg_pill_black);
+            btnToggle.setTextColor(0xFFFFFFFF);
+            btnToggle.setOnClickListener(v -> {
+                Intent vpnIntent = npm.prepareVpnIntent(activity);
+                if (vpnIntent != null) {
+                    activity.startActivityForResult(vpnIntent, NetworkProtectionManager.REQUEST_CODE_VPN_CONSENT);
+                } else {
+                    npm.startProtection(activity);
+                    Toast.makeText(activity, "Network protection started.", Toast.LENGTH_SHORT).show();
+                    render();
+                }
+            });
+        }
+        btnToggle.setTextSize(senior ? 13 : 11);
+        btnToggle.setTypeface(null, android.graphics.Typeface.BOLD);
+        LinearLayout.LayoutParams btp = new LinearLayout.LayoutParams(0, (int) (42 * density), 1.2f);
+        btp.rightMargin = (int) (6 * density);
+        btnToggle.setLayoutParams(btp);
+        btnRow.addView(btnToggle);
+
+        Button btnVpnSettings = new Button(activity);
+        btnVpnSettings.setText("⚙️ Android VPN");
+        btnVpnSettings.setBackgroundResource(R.drawable.bg_pill_dark);
+        btnVpnSettings.setTextColor(0xFF333333);
+        btnVpnSettings.setTextSize(senior ? 13 : 11);
+        btnVpnSettings.setTypeface(null, android.graphics.Typeface.BOLD);
+        LinearLayout.LayoutParams bvp = new LinearLayout.LayoutParams(0, (int) (42 * density), 1f);
+        btnVpnSettings.setLayoutParams(bvp);
+        btnVpnSettings.setOnClickListener(v -> {
+            try {
+                activity.startActivity(npm.getVpnSettingsIntent());
+            } catch (Exception e) {
+                Toast.makeText(activity, "Cannot open VPN settings on this device.", Toast.LENGTH_SHORT).show();
+            }
+        });
+        btnRow.addView(btnVpnSettings);
+
+        card.addView(btnRow);
+        return card;
+    }
+
     private View buildPrivacySection(boolean senior) {
         LinearLayout card = new LinearLayout(activity);
         card.setOrientation(LinearLayout.VERTICAL);
@@ -259,7 +395,17 @@ public class SettingsScreenController {
         bp.topMargin = (int) (12 * density);
         btnClear.setLayoutParams(bp);
         btnClear.setOnClickListener(v -> {
-            Toast.makeText(activity, "Local telemetry cache pruned. 0 records retained.", Toast.LENGTH_SHORT).show();
+            new AlertDialog.Builder(activity)
+                    .setTitle("Prune & Clear Local Audit Cache")
+                    .setMessage("This will permanently remove all security scan records from the local SQLite database. Proceed?")
+                    .setPositiveButton("Prune & Clear", (dialog, which) -> {
+                        AppState.get().clearLocalAuditCache(() -> {
+                            Toast.makeText(activity, "Local audit database cleared. 0 records retained.", Toast.LENGTH_SHORT).show();
+                            render();
+                        });
+                    })
+                    .setNegativeButton("Cancel", null)
+                    .show();
         });
         card.addView(btnClear);
 
@@ -413,8 +559,17 @@ public class SettingsScreenController {
         meta.setLineSpacing(0, 1.25f);
         LinearLayout.LayoutParams mp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         mp.topMargin = (int) (6 * density);
-        meta.setLayoutParams(mp);
-        card.addView(meta);
+        Button btnDiag = new Button(activity);
+        btnDiag.setText("🛠️ Open AI Diagnostics (LiteRT-LM Gemma)");
+        btnDiag.setBackgroundResource(R.drawable.bg_pill_black);
+        btnDiag.setTextColor(0xFFFFFFFF);
+        btnDiag.setTextSize(12);
+        btnDiag.setTypeface(null, android.graphics.Typeface.BOLD);
+        LinearLayout.LayoutParams dp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, (int) (40 * density));
+        dp.topMargin = (int) (12 * density);
+        btnDiag.setLayoutParams(dp);
+        btnDiag.setOnClickListener(v -> dev.saathi.personal.ui.components.AiDiagnosticsDialog.show(activity));
+        card.addView(btnDiag);
 
         return card;
     }

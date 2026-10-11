@@ -14,6 +14,7 @@ public class ThreatRuleEvaluator {
 
     public ThreatRuleEvaluator() {
         // Register default static heuristic rules
+        registeredRules.add(new WhatsAppModRule());
         registeredRules.add(new BankingTrojanPatternRule());
         registeredRules.add(new OtpStealerPatternRule());
         registeredRules.add(new DropperRansomwareRule());
@@ -43,6 +44,16 @@ public class ThreatRuleEvaluator {
             DexInspectionResult dex,
             CertificateMetadata certificate,
             List<String> hiddenPayloads) {
+        return evaluateAll(sha256Checksum, null, manifest, dex, certificate, hiddenPayloads);
+    }
+
+    public List<ThreatIndicator> evaluateAll(
+            String sha256Checksum,
+            String fileName,
+            ManifestMetadata manifest,
+            DexInspectionResult dex,
+            CertificateMetadata certificate,
+            List<String> hiddenPayloads) {
 
         List<ThreatIndicator> collected = new ArrayList<>();
 
@@ -60,7 +71,12 @@ public class ThreatRuleEvaluator {
         // 2. Evaluate all rules
         for (SecurityRule rule : registeredRules) {
             try {
-                List<ThreatIndicator> ruleIndicators = rule.evaluate(manifest, dex, certificate, hiddenPayloads);
+                List<ThreatIndicator> ruleIndicators;
+                if (rule instanceof WhatsAppModRule) {
+                    ruleIndicators = ((WhatsAppModRule) rule).evaluate(manifest, dex, certificate, hiddenPayloads, fileName);
+                } else {
+                    ruleIndicators = rule.evaluate(manifest, dex, certificate, hiddenPayloads);
+                }
                 if (ruleIndicators != null) {
                     collected.addAll(ruleIndicators);
                 }
